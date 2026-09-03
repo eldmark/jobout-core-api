@@ -1,0 +1,51 @@
+# Levanta SOLO el backend y su base de datos.
+#
+#   cp docker-compose.example.yml docker-compose.yml
+#   cp .env.example .env          # y completá los valores
+#   docker compose up
+#
+# Para levantar backend + frontend juntos con un solo comando, usá el compose
+# de jobout-docs:  cd ../jobout-docs && make dev
+#
+# docker-compose.yml está en .gitignore: es tuyo, tocalo sin miedo.
+
+name: jobout-core-api
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jobout
+      POSTGRES_PASSWORD: jobout
+      POSTGRES_DB: jobout
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobout -d jobout"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  core-api:
+    build:
+      context: .
+      target: dev
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://jobout:jobout@postgres:5432/jobout
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - target-cache:/app/target
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  cargo-registry:
+  target-cache:

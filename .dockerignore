@@ -1,0 +1,9 @@
+target/
+.git/
+.env
+.env.*
+!.env.example
+docker-compose.yml
+docker-compose.override.yml
+**/*.md
+.github/
