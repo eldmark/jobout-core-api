@@ -3,7 +3,9 @@
 # ---------- desarrollo: recarga en caliente ----------
 FROM rust:1.90-bookworm AS dev
 WORKDIR /app
-RUN cargo install cargo-watch --locked
+# clippy y rustfmt para que el contenedor pueda reproducir lo que exige el CI
+RUN rustup component add clippy rustfmt \
+ && cargo install cargo-watch --locked
 COPY Cargo.toml ./
 COPY migration/Cargo.toml migration/
 # Fuentes mínimas para que cargo resuelva y cachee las dependencias
