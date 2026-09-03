@@ -69,7 +69,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Toda migración implementa down
         run: |
-          faltan=$(grep -rLn 'async fn down' migration/src --include='m*.rs' || true)
+          # m[0-9]* y no m*: las migraciones de SeaORM son m20260903_120000_nombre.rs,
+          # y un glob 'm*.rs' también matchea main.rs
+          faltan=$(grep -rLn 'async fn down' migration/src --include='m[0-9]*.rs' || true)
           if [ -n "$faltan" ]; then
             echo "::error::migraciones sin down: $faltan"
             exit 1
