@@ -1,9 +1,15 @@
-//! Registro e ingreso con contraseña. Autenticación propia del MVP (ver docs/working/fase1).
+//! Registro, ingreso, renovación y cierre de sesión. Autenticación propia del MVP (ver docs/working/fase1).
 //!
 //! Rutas públicas a propósito: son la puerta de entrada, no pueden exigir un token que todavía
 //! no existe. Por eso se protegen de otra forma: límite de tamaño del cuerpo, límite de
 //! intentos por email, respuestas que no distinguen «no existe» de «contraseña incorrecta», y
 //! trabajo de Argon2 aunque el email no exista.
+//!
+//! `refresh` y `logout` también son públicas a propósito: se usan justo cuando el access token
+//! ya expiró (o se perdió), así que no pueden exigirlo. Lo que las protege es que el refresh
+//! token es un secreto de 256 bits que solo existe como hash en la base, que toda respuesta de
+//! fallo es genérica (no distingue desconocido de expirado) y que reusar uno rotado revoca
+//! todas las sesiones del usuario.
 //!
 //! Nada de lo que entra (email, contraseña) ni de lo que sale (tokens) se escribe en un log, y
 //! los errores internos se registran por categoría, nunca con el texto del error de la base.
@@ -44,6 +50,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/auth/register", post(register))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/refresh", post(refresh))
+        .route("/api/v1/auth/logout", post(logout))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
@@ -53,6 +61,7 @@ enum ApiError {
     Invalid,
     EmailUnavailable,
     BadCredentials,
+    InvalidRefresh,
     TooManyAttempts,
     Forbidden,
     Internal,
@@ -75,6 +84,11 @@ impl IntoResponse for ApiError {
                 StatusCode::UNAUTHORIZED,
                 "credenciales_invalidas",
                 "El correo o la contraseña no son correctos.",
+            ),
+            Self::InvalidRefresh => (
+                StatusCode::UNAUTHORIZED,
+                "sesion_invalida",
+                "La sesión no es válida. Inicia sesión de nuevo.",
             ),
             Self::TooManyAttempts => (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -121,6 +135,11 @@ struct RegisterRequest {
 struct LoginRequest {
     email: String,
     password: String,
+}
+
+#[derive(Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
 }
 
 #[derive(Serialize)]
@@ -407,4 +426,97 @@ async fn registrar_fallo(state: &AppState, email_hash: &[u8]) -> Result<(), ApiE
         .await
         .map_err(db("registrar_fallo"))?;
     Ok(())
+}
+
+// --------------------------------------------------------------- refresh
+
+/// Rota el refresh token: el presentado queda revocado y se entrega un par nuevo.
+///
+/// Todo ocurre en una transacción. El `UPDATE ... WHERE revoked_at IS NULL` es la compuerta
+/// atómica: con dos peticiones simultáneas la segunda espera el bloqueo de la fila y, al
+/// reevaluar, ya no la encuentra viva; así solo una rota y la otra cuenta como reuso.
+async fn refresh(
+    State(state): State<AppState>,
+    Json(entrada): Json<RefreshRequest>,
+) -> Result<Json<TokenResponse>, ApiError> {
+    let hash = sha256(&entrada.refresh_token);
+    let txn = state.db.begin().await.map_err(db("begin"))?;
+
+    let rotado = txn
+        .query_one(stmt(
+            "UPDATE refresh_tokens SET revoked_at = now(), updated_at = now() \
+             WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now() \
+             RETURNING user_id::text",
+            vec![hash.clone().into()],
+        ))
+        .await
+        .map_err(db("rotar_refresh"))?;
+
+    let Some(fila) = rotado else {
+        // No sirvió. Si existe y estaba revocado, alguien lo está reusando: se cierran todas
+        // las sesiones del usuario y se confirma ANTES de responder 401. Si no existe o
+        // simplemente expiró, no hay nada que revocar.
+        let revocado = txn
+            .query_one(stmt(
+                "SELECT user_id::text FROM refresh_tokens \
+                 WHERE token_hash = $1 AND revoked_at IS NOT NULL",
+                vec![hash.into()],
+            ))
+            .await
+            .map_err(db("buscar_reuso"))?;
+        if let Some(fila) = revocado {
+            let user_id: String = fila.try_get_by_index(0).map_err(db("leer_usuario_reuso"))?;
+            txn.execute(stmt(
+                "UPDATE refresh_tokens SET revoked_at = now(), updated_at = now() \
+                 WHERE user_id = $1::uuid AND revoked_at IS NULL",
+                vec![user_id.into()],
+            ))
+            .await
+            .map_err(db("revocar_sesiones"))?;
+            tracing::warn!("reuso de refresh token: sesiones revocadas");
+        }
+        txn.commit().await.map_err(db("commit"))?;
+        return Err(ApiError::InvalidRefresh);
+    };
+    let user_id: String = fila.try_get_by_index(0).map_err(db("leer_usuario"))?;
+
+    let estado = txn
+        .query_one(stmt(
+            "SELECT status::text FROM users WHERE id = $1::uuid AND deleted_at IS NULL",
+            vec![user_id.clone().into()],
+        ))
+        .await
+        .map_err(db("leer_estado"))?
+        .map(|f| f.try_get_by_index::<String>(0))
+        .transpose()
+        .map_err(db("leer_estado"))?;
+    match estado.as_deref() {
+        Some("suspended") => return Err(ApiError::Forbidden), // la transacción se descarta
+        None => return Err(ApiError::InvalidRefresh),
+        Some(_) => {}
+    }
+
+    let tokens = issue_tokens(&state, &txn, &user_id).await?;
+    txn.commit().await.map_err(db("commit"))?;
+    Ok(Json(tokens))
+}
+
+// ---------------------------------------------------------------- logout
+
+/// Revoca ese refresh token y nada más. Idempotente: desconocido o ya revocado también es
+/// 204, para no revelar si el token existió.
+async fn logout(
+    State(state): State<AppState>,
+    Json(entrada): Json<RefreshRequest>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .db
+        .execute(stmt(
+            "UPDATE refresh_tokens SET revoked_at = now(), updated_at = now() \
+             WHERE token_hash = $1 AND revoked_at IS NULL",
+            vec![sha256(&entrada.refresh_token).into()],
+        ))
+        .await
+        .map_err(db("revocar_refresh"))?;
+    Ok(StatusCode::NO_CONTENT)
 }
