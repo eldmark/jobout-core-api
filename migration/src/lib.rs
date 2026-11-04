@@ -3,6 +3,7 @@ pub use sea_orm_migration::prelude::*;
 mod m20261104_000001_create_identity;
 mod m20261104_000002_create_privacy_events;
 mod m20261104_000003_create_plans_and_subscriptions;
+mod m20261104_000004_create_login_attempts;
 
 pub struct Migrator;
 
@@ -18,6 +19,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261104_000001_create_identity::Migration),
             Box::new(m20261104_000002_create_privacy_events::Migration),
             Box::new(m20261104_000003_create_plans_and_subscriptions::Migration),
+            Box::new(m20261104_000004_create_login_attempts::Migration),
         ]
     }
 }
