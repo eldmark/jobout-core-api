@@ -3,6 +3,7 @@
 //! Este servicio es el único que habla con PostgreSQL y el único que ve PII.
 //! Ver `documentation/arquitectura.md` y `documentation/security.md` en jobout-docs.
 
+pub mod auth_user;
 pub mod crypto;
 pub mod jwt;
 pub mod password;
@@ -28,6 +29,7 @@ pub fn app() -> Router {
 pub fn app_with_state(state: state::AppState) -> Router {
     Router::new()
         .merge(routes::health::router())
-        .merge(routes::auth::router().with_state(state))
+        .merge(routes::auth::router().with_state(state.clone()))
+        .merge(routes::me::router().with_state(state))
         .layer(TraceLayer::new_for_http())
 }
