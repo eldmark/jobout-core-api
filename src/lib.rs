@@ -3,6 +3,7 @@
 //! Este servicio es el único que habla con PostgreSQL y el único que ve PII.
 //! Ver `documentation/arquitectura.md` y `documentation/security.md` en jobout-docs.
 
+pub mod crypto;
 pub mod routes;
 
 use axum::Router;
