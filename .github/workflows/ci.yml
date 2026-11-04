@@ -79,9 +79,9 @@ jobs:
           echo "Todas las migraciones implementan down"
       - name: Aplica y revierte limpio
         run: |
-          cargo run --bin migration -- up
-          cargo run --bin migration -- down -n 1 || echo "sin migraciones que revertir todavía"
-          cargo run --bin migration -- up
+          cargo run -p migration -- up
+          cargo run -p migration -- down -n 1 || echo "sin migraciones que revertir todavía"
+          cargo run -p migration -- up
 
   docker:
     name: La imagen compila
