@@ -25,6 +25,10 @@ sha2 = "0.10"
 base64 = "0.22"
 migration = { version = "0.1.0", path = "migration" }
 
+# Auth (JB-07): contraseñas y JWT
+argon2 = "0.6"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
