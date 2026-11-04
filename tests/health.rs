@@ -7,8 +7,23 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use jobout_core_api::app;
+use std::sync::Arc;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use jobout_core_api::{app_with_state, crypto::PiiKeys, jwt::JwtKeys, state::AppState};
+use sea_orm::DatabaseConnection;
 use tower::ServiceExt;
+
+/// La aplicación real, sin base de datos: `/health` es pública y no la consulta.
+fn app() -> axum::Router {
+    app_with_state(AppState {
+        db: DatabaseConnection::Disconnected,
+        pii: Arc::new(
+            PiiKeys::from_base64(&STANDARD.encode([1u8; 32]), &STANDARD.encode([2u8; 32])).unwrap(),
+        ),
+        jwt: Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap()),
+    })
+}
 
 /// Caso 1: GET /health responde 200 con status "ok".
 #[tokio::test]

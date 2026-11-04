@@ -15,11 +15,11 @@
 //! los errores internos se registran por categoría, nunca con el texto del error de la base.
 
 use axum::{
-    extract::{DefaultBodyLimit, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
+    Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use sea_orm::{
@@ -30,29 +30,53 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use super::table::{Access, RouteSpec};
 use crate::{
     jwt::ACCESS_TTL_SECS,
+    login_attempts,
     password::{hash_password, validate_policy, verify_dummy, verify_password},
     state::AppState,
 };
 
-/// Fallos seguidos que bloquean el ingreso de un email.
-const MAX_FAILURES: i32 = 5;
-/// Ventana de conteo y de bloqueo, en minutos.
-const WINDOW_MINUTES: i32 = 15;
 /// Vida del refresh token, en días.
 const REFRESH_DAYS: i32 = 30;
-const MAX_BODY_BYTES: usize = 8 * 1024;
 const MAX_EMAIL_LEN: usize = 254;
 const MAX_NAME_LEN: usize = 100;
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/auth/register", post(register))
-        .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/auth/refresh", post(refresh))
-        .route("/api/v1/auth/logout", post(logout))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+/// Las rutas de sesión. Todas públicas, y cada una explica por qué (ver el encabezado del módulo).
+pub fn routes() -> Vec<RouteSpec> {
+    vec![
+        RouteSpec {
+            path: "/api/v1/auth/register",
+            methods: &["POST"],
+            access: Access::Public("Puerta de entrada: crea la cuenta, todavía no hay token."),
+            handler: post(register),
+        },
+        RouteSpec {
+            path: "/api/v1/auth/login",
+            methods: &["POST"],
+            access: Access::Public(
+                "Puerta de entrada: entrega el primer token a partir de la contraseña.",
+            ),
+            handler: post(login),
+        },
+        RouteSpec {
+            path: "/api/v1/auth/refresh",
+            methods: &["POST"],
+            access: Access::Public(
+                "Se llama justo porque el access token venció; se autentica con el refresh token.",
+            ),
+            handler: post(refresh),
+        },
+        RouteSpec {
+            path: "/api/v1/auth/logout",
+            methods: &["POST"],
+            access: Access::Public(
+                "Se autentica con el refresh token que revoca; debe poder cerrarse con el access vencido.",
+            ),
+            handler: post(logout),
+        },
+    ]
 }
 
 // ---------------------------------------------------------------- errores
@@ -334,21 +358,9 @@ async fn login(
     let email_hash = state.pii.email_hash(&email);
 
     // 1. ¿Bloqueado? Antes de mirar la contraseña: ni la correcta pasa durante el bloqueo.
-    let bloqueado = state
-        .db
-        .query_one(stmt(
-            "SELECT failures >= $2 AND window_started_at > now() - make_interval(mins => $3) \
-             FROM login_attempts WHERE email_hash = $1",
-            vec![
-                email_hash.clone().into(),
-                MAX_FAILURES.into(),
-                WINDOW_MINUTES.into(),
-            ],
-        ))
+    let bloqueado = login_attempts::is_locked(&state.db, &email_hash)
         .await
-        .map_err(db("leer_intentos"))?
-        .map(|fila| fila.try_get_by_index::<bool>(0).unwrap_or(false))
-        .unwrap_or(false);
+        .map_err(db("leer_intentos"))?;
     if bloqueado {
         return Err(ApiError::TooManyAttempts);
     }
@@ -386,7 +398,9 @@ async fn login(
 
     // 3. Fallo: se cuenta, exista o no el email, y la respuesta es siempre la misma.
     let (Some((user_id, estado)), true) = (cuenta, correcta) else {
-        registrar_fallo(&state, &email_hash).await?;
+        login_attempts::record_failure(&state.db, &email_hash)
+            .await
+            .map_err(db("registrar_fallo"))?;
         return Err(ApiError::BadCredentials);
     };
 
@@ -395,37 +409,11 @@ async fn login(
     }
 
     // 4. Éxito: se reinicia el contador y se entregan los tokens.
-    state
-        .db
-        .execute(stmt(
-            "DELETE FROM login_attempts WHERE email_hash = $1",
-            vec![email_hash.into()],
-        ))
+    login_attempts::clear(&state.db, &email_hash)
         .await
         .map_err(db("reiniciar_intentos"))?;
 
     Ok(Json(issue_tokens(&state, &state.db, &user_id).await?))
-}
-
-async fn registrar_fallo(state: &AppState, email_hash: &[u8]) -> Result<(), ApiError> {
-    state
-        .db
-        .execute(stmt(
-            "INSERT INTO login_attempts (email_hash, failures, window_started_at) \
-             VALUES ($1, 1, now()) \
-             ON CONFLICT (email_hash) DO UPDATE SET \
-               failures = CASE WHEN login_attempts.window_started_at \
-                                 < now() - make_interval(mins => $2) \
-                               THEN 1 ELSE login_attempts.failures + 1 END, \
-               window_started_at = CASE WHEN login_attempts.window_started_at \
-                                 < now() - make_interval(mins => $2) \
-                               THEN now() ELSE login_attempts.window_started_at END, \
-               updated_at = now()",
-            vec![email_hash.to_vec().into(), WINDOW_MINUTES.into()],
-        ))
-        .await
-        .map_err(db("registrar_fallo"))?;
-    Ok(())
 }
 
 // --------------------------------------------------------------- refresh

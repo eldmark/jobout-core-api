@@ -1,5 +1,7 @@
-use axum::{routing::get, Json, Router};
+use axum::{routing::get, Json};
 use serde::Serialize;
+
+use super::table::{Access, RouteSpec};
 
 #[derive(Serialize)]
 pub struct Health {
@@ -8,10 +10,15 @@ pub struct Health {
     pub version: &'static str,
 }
 
-/// Ruta pública a propósito: la usan el healthcheck de Docker y el orquestador
-/// para saber si el servicio está listo. No devuelve ningún dato de usuario.
-pub fn router() -> Router {
-    Router::new().route("/health", get(health))
+pub fn routes() -> Vec<RouteSpec> {
+    vec![RouteSpec {
+        path: "/health",
+        methods: &["GET"],
+        access: Access::Public(
+            "Healthcheck de Docker y del orquestador; no devuelve datos de usuario.",
+        ),
+        handler: get(health),
+    }]
 }
 
 async fn health() -> Json<Health> {
