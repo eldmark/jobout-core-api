@@ -6,6 +6,7 @@
 pub mod auth_user;
 pub mod crypto;
 pub mod jwt;
+pub mod login_attempts;
 pub mod password;
 pub mod routes;
 pub mod state;
@@ -13,23 +14,11 @@ pub mod state;
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
-/// Construye el router de la aplicación.
+/// Construye la aplicación completa a partir de la tabla de rutas (`routes::table`), que es la
+/// única forma de montar una ruta.
 ///
-/// Vive acá y no en `main` para que las pruebas de integración puedan levantar
-/// la app completa sin abrir un puerto.
-pub fn app() -> Router {
-    Router::new()
-        .merge(routes::health::router())
-        .layer(TraceLayer::new_for_http())
-}
-
-/// Construye la aplicación completa: las rutas de salud y las que necesitan base de datos.
-///
-/// `app()` queda como el router sin estado (solo `/health`); esta es la que arranca `main`.
+/// Vive acá y no en `main` para que las pruebas de integración puedan levantar la app completa
+/// sin abrir un puerto.
 pub fn app_with_state(state: state::AppState) -> Router {
-    Router::new()
-        .merge(routes::health::router())
-        .merge(routes::auth::router().with_state(state.clone()))
-        .merge(routes::me::router().with_state(state))
-        .layer(TraceLayer::new_for_http())
+    routes::table::build(routes::table::all(), state).layer(TraceLayer::new_for_http())
 }

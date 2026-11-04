@@ -72,6 +72,11 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // La tabla de rutas ya lo validó (token y cuenta) para las rutas protegidas: no se
+        // repite la consulta. Solo el middleware escribe en las extensiones.
+        if let Some(usuario) = parts.extensions.get::<AuthUser>() {
+            return Ok(usuario.clone());
+        }
         let token = bearer(parts).ok_or(AuthError::Unauthorized)?;
         let id = state
             .jwt
