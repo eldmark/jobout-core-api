@@ -3,7 +3,9 @@
 # ---------- desarrollo: recarga en caliente ----------
 FROM rust:1.90-bookworm AS dev
 WORKDIR /app
-RUN cargo install cargo-watch --locked
+# clippy y rustfmt para que el contenedor pueda reproducir lo que exige el CI
+RUN rustup component add clippy rustfmt \
+ && cargo install cargo-watch --locked
 COPY Cargo.toml ./
 COPY migration/Cargo.toml migration/
 # Fuentes mínimas para que cargo resuelva y cachee las dependencias
@@ -15,7 +17,11 @@ RUN mkdir -p src migration/src \
  && cargo build 2>/dev/null || true
 COPY . .
 EXPOSE 8080
-CMD ["cargo", "watch", "-x", "run"]
+# El `touch` no es adorno: arriba se compila un `fn main() {}` falso para cachear las
+# dependencias, y ese build queda en /app/target — que en desarrollo es un volumen que
+# sobrevive a la reconstrucción de la imagen. Sin esto, cargo compara mtimes, da por fresco
+# el fingerprint del binario falso y arranca un main vacío que sale con código 0.
+CMD ["sh", "-c", "touch src/main.rs src/lib.rs && cargo watch -x run"]
 
 # ---------- compilación ----------
 FROM rust:1.90-bookworm AS builder
