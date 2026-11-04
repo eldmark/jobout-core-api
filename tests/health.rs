@@ -14,7 +14,12 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn health_responde_ok() {
     let respuesta = app()
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -34,7 +39,12 @@ async fn health_responde_ok() {
 #[tokio::test]
 async fn health_no_expone_datos_de_usuario() {
     let respuesta = app()
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -54,7 +64,12 @@ async fn health_no_expone_datos_de_usuario() {
 #[tokio::test]
 async fn ruta_inexistente_responde_404() {
     let respuesta = app()
-        .oneshot(Request::builder().uri("/no-existe").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/no-existe")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
