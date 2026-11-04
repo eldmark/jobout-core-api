@@ -4,6 +4,8 @@
 //! Ver `documentation/arquitectura.md` y `documentation/security.md` en jobout-docs.
 
 pub mod crypto;
+pub mod jwt;
+pub mod password;
 pub mod routes;
 
 use axum::Router;
