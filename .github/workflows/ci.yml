@@ -44,9 +44,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Unitarias
-        run: cargo test --lib --bins
+        run: cargo test --workspace --lib --bins
       - name: Integración
-        run: cargo test --tests
+        run: cargo test --workspace --tests
 
   migraciones:
     name: Migraciones reversibles
