@@ -5,6 +5,7 @@
 
 pub mod auth_user;
 pub mod crypto;
+pub mod cv;
 pub mod jwt;
 pub mod login_attempts;
 pub mod password;

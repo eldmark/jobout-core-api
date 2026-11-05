@@ -29,6 +29,12 @@ migration = { version = "0.1.0", path = "migration" }
 argon2 = "0.6"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
+# CV extraction (JB-21)
+lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+unicode-normalization = "0.1"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
