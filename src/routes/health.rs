@@ -17,6 +17,7 @@ pub fn routes() -> Vec<RouteSpec> {
         access: Access::Public(
             "Healthcheck de Docker y del orquestador; no devuelve datos de usuario.",
         ),
+        body_limit: None,
         handler: get(health),
     }]
 }

@@ -23,6 +23,7 @@ pub fn routes() -> Vec<RouteSpec> {
         path: "/api/v1/catalogs/{nombre}",
         methods: &["GET"],
         access: Access::Authenticated,
+        body_limit: None,
         handler: get(list),
     }]
 }

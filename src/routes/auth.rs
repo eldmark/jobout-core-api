@@ -50,6 +50,7 @@ pub fn routes() -> Vec<RouteSpec> {
             path: "/api/v1/auth/register",
             methods: &["POST"],
             access: Access::Public("Puerta de entrada: crea la cuenta, todavía no hay token."),
+            body_limit: None,
             handler: post(register),
         },
         RouteSpec {
@@ -58,6 +59,7 @@ pub fn routes() -> Vec<RouteSpec> {
             access: Access::Public(
                 "Puerta de entrada: entrega el primer token a partir de la contraseña.",
             ),
+            body_limit: None,
             handler: post(login),
         },
         RouteSpec {
@@ -66,6 +68,7 @@ pub fn routes() -> Vec<RouteSpec> {
             access: Access::Public(
                 "Se llama justo porque el access token venció; se autentica con el refresh token.",
             ),
+            body_limit: None,
             handler: post(refresh),
         },
         RouteSpec {
@@ -74,6 +77,7 @@ pub fn routes() -> Vec<RouteSpec> {
             access: Access::Public(
                 "Se autentica con el refresh token que revoca; debe poder cerrarse con el access vencido.",
             ),
+            body_limit: None,
             handler: post(logout),
         },
     ]

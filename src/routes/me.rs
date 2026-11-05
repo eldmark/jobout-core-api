@@ -29,6 +29,7 @@ pub fn routes() -> Vec<RouteSpec> {
         path: "/api/v1/me",
         methods: &["GET", "DELETE"],
         access: Access::Authenticated,
+        body_limit: None,
         handler: get(me).delete(delete_me),
     }]
 }
