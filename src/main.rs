@@ -10,11 +10,11 @@ use tokio::net::TcpListener;
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
+    // El filtro fija que sea-orm y sqlx nunca pasen de `warn`: ver `telemetry`.
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "jobout_core_api=debug,tower_http=debug".into()),
-        )
+        .with_env_filter(jobout_core_api::telemetry::env_filter(
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .init();
 
     // El servicio no arranca sin claves válidas: los errores nombran la variable, nunca el valor.
