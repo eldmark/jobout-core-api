@@ -38,6 +38,7 @@ fn app(db: &TestDb) -> Router {
         db: db.conn.clone(),
         pii: pii(),
         jwt: jwt(),
+        blobs: jobout_core_api::blob::memory_store(),
     })
 }
 

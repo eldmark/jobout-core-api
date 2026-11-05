@@ -57,6 +57,7 @@ fn estado_sin_base() -> AppState {
         db: DatabaseConnection::Disconnected,
         pii: pii(),
         jwt: jwt(),
+        blobs: jobout_core_api::blob::memory_store(),
     }
 }
 
@@ -241,6 +242,7 @@ async fn t5_la_proteccion_no_depende_del_handler() {
         db: db.conn.clone(),
         pii: pii(),
         jwt: jwt(),
+        blobs: jobout_core_api::blob::memory_store(),
     };
     // Una cuenta real, para tener un token válido.
     let (_, cuenta) = {

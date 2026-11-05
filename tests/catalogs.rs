@@ -24,6 +24,7 @@ fn app(db: &TestDb) -> Router {
             PiiKeys::from_base64(&STANDARD.encode([1u8; 32]), &STANDARD.encode([2u8; 32])).unwrap(),
         ),
         jwt: Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap()),
+        blobs: jobout_core_api::blob::memory_store(),
     })
 }
 

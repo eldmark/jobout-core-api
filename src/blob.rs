@@ -83,6 +83,11 @@ pub trait BlobStore: Send + Sync {
     async fn delete(&self, key: &str) -> Result<(), BlobError>;
 }
 
+/// Un almacén en memoria nuevo, listo para ponerse en `AppState`. Pensado para pruebas.
+pub fn memory_store() -> std::sync::Arc<dyn BlobStore> {
+    std::sync::Arc::new(MemoryBlobStore::new())
+}
+
 /// Clave nueva: UUID v7 en minúsculas, sin nombre de archivo ni id de usuario.
 pub fn new_blob_key() -> String {
     migration::new_id().to_string()

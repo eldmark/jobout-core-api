@@ -376,3 +376,22 @@ async fn new_blob_key_es_uuid_v7_minusculas_y_unica() {
     let k = new_blob_key();
     MemoryBlobStore::new().put(&k, b"x").await.unwrap();
 }
+
+/// `memory_store()` entrega un almacén listo para usar como `Arc<dyn BlobStore>`, para que las
+/// pruebas de rutas no tengan que armar uno a mano.
+#[tokio::test]
+async fn memory_store_es_un_almacen_utilizable() {
+    use jobout_core_api::blob::{memory_store, BlobError};
+
+    let almacen = memory_store();
+    almacen.put("abc-123", b"hola").await.unwrap();
+    assert_eq!(almacen.get("abc-123").await.unwrap(), b"hola");
+    almacen.delete("abc-123").await.unwrap();
+    assert_eq!(almacen.get("abc-123").await, Err(BlobError::NotFound));
+    // Cada llamada da un almacén independiente.
+    memory_store().put("otra-clave", b"x").await.unwrap();
+    assert_eq!(
+        memory_store().get("otra-clave").await,
+        Err(BlobError::NotFound)
+    );
+}
