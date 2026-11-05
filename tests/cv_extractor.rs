@@ -483,37 +483,122 @@ fn d10_salida_ordenada_por_nombre() {
 }
 
 // ---------- D11: rendimiento ----------
+//
+// Un umbral de reloj absoluto («menos de 2 s») es inestable por naturaleza: en un ejecutor
+// compartido de CI la misma prueba tardó 2.4 s y en una máquina local 0.3 s. Lo que de verdad se
+// quiere garantizar es que **no hay comportamiento cuadrático**, así que se mide el ESCALADO: el
+// mismo trabajo con un texto 4 veces mayor tiene que tardar ≈4 veces más (lineal), no ≈16
+// (cuadrático). Se toma el mejor de varios intentos para quitar ruido. Queda además una cota
+// absoluta muy holgada como red de seguridad contra un cuelgue.
+
+use std::time::Duration;
+
+const INTENTOS: usize = 3;
+/// Un algoritmo lineal da ≈4; uno cuadrático ≈16. 10 deja margen para el ruido sin dejar pasar lo cuadrático.
+const RATIO_MAXIMO: f64 = 10.0;
+/// Cota absoluta, solo contra cuelgues (no contra lentitud).
+const COTA_ABSOLUTA: Duration = Duration::from_secs(30);
+
+fn mejor_tiempo(f: &dyn Fn(&str), texto: &str) -> Duration {
+    (0..INTENTOS)
+        .map(|_| {
+            let t0 = Instant::now();
+            f(texto);
+            t0.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+/// Cuánto más tarda `f` con `grande` que con `chico`. Se descarta el ruido de arranque haciendo
+/// una pasada previa en vacío.
+fn ratio_de_escalado(f: &dyn Fn(&str), chico: &str, grande: &str) -> (f64, Duration) {
+    f(chico);
+    let t_chico = mejor_tiempo(f, chico).max(Duration::from_micros(200));
+    let t_grande = mejor_tiempo(f, grande);
+    (t_grande.as_secs_f64() / t_chico.as_secs_f64(), t_grande)
+}
+
+/// Texto de al menos `bytes` bytes repitiendo `bloque`.
+fn repetir(bloque: &str, bytes: usize) -> String {
+    bloque.repeat(bytes / bloque.len() + 1)
+}
+
+/// El medidor mismo tiene que distinguir lo lineal de lo cuadrático; si no, D11 no prueba nada.
+#[test]
+fn d11_el_medidor_distingue_lo_lineal_de_lo_cuadratico() {
+    let lineal = |t: &str| {
+        let mut acc = 0u64;
+        for b in t.bytes() {
+            acc = acc.wrapping_add(b as u64);
+        }
+        std::hint::black_box(acc);
+    };
+    let cuadratico = |t: &str| {
+        let b = t.as_bytes();
+        let mut acc = 0u64;
+        for i in 0..b.len() {
+            for j in 0..b.len() {
+                acc = acc.wrapping_add((b[i] ^ b[j]) as u64);
+            }
+        }
+        std::hint::black_box(acc);
+    };
+    let (chico, grande) = ("a".repeat(2_000), "a".repeat(8_000));
+    let (r_lineal, _) = ratio_de_escalado(&lineal, &chico, &grande);
+    let (r_cuadratico, _) = ratio_de_escalado(&cuadratico, &chico, &grande);
+    assert!(
+        r_cuadratico > RATIO_MAXIMO,
+        "el medidor no detecta lo cuadrático (ratio {r_cuadratico:.1})"
+    );
+    assert!(
+        r_lineal < r_cuadratico,
+        "lineal {r_lineal:.1} no es menor que cuadrático {r_cuadratico:.1}"
+    );
+}
 
 /// D11
 #[test]
-fn d11_dos_megas_de_texto_en_menos_de_dos_segundos() {
+fn d11_dos_megas_de_texto_escalan_de_forma_lineal() {
     let bloque = "Acme | Backend Developer | 01/2021 – 03/2023\n- Servicios en Rust, Docker y PostgreSQL con js\nInglés avanzado, rustico, javascripty 600 111 222 a@b.co\n";
-    let texto = bloque.repeat(2 * 1024 * 1024 / bloque.len() + 1);
-    assert!(texto.len() >= 2 * 1024 * 1024);
-    let t0 = Instant::now();
-    let p = extract(&texto);
-    let dt = t0.elapsed();
-    assert!(dt.as_secs_f64() < 2.0, "tardó {dt:?}");
+    let grande = repetir(bloque, 2 * 1024 * 1024);
+    let chico = repetir(bloque, 512 * 1024);
+    assert!(grande.len() >= 2 * 1024 * 1024);
+
+    let (ratio, t_grande) = ratio_de_escalado(&|t| drop(extract(t)), &chico, &grande);
+    assert!(
+        ratio < RATIO_MAXIMO,
+        "4× más texto tardó {ratio:.1}× más: ¿comportamiento cuadrático? ({t_grande:?})"
+    );
+    assert!(t_grande < COTA_ABSOLUTA, "tardó {t_grande:?}");
+
+    let p = extract(&grande);
     assert_eq!(p.skills.len(), 4);
     assert!(p.experiences.len() <= 30);
 }
 
 #[test]
 fn d11_dos_megas_en_una_sola_linea_y_sin_separadores_utiles() {
-    let casos: Vec<(&str, String)> = vec![
-        ("rust x420k", "rust ".repeat(420_000)),
-        ("1 x1M", "1 ".repeat(1_050_000)),
-        ("una palabra", "a".repeat(2 * 1024 * 1024)),
-        ("años", "2021 – ".repeat(350_000)),
+    // (nombre, bloque que se repite). Cada caso se mide a 512 KiB y a 2 MiB.
+    let casos: [(&str, &str); 4] = [
+        ("rust repetido", "rust "),
+        ("números sueltos", "1 "),
+        ("una palabra", "a"),
+        ("años", "2021 – "),
     ];
-    for (nombre, texto) in casos {
-        let t0 = Instant::now();
-        let p = extract(&texto);
-        let dt = t0.elapsed();
-        assert!(dt.as_secs_f64() < 2.0, "{nombre} tardó {dt:?}");
+    for (nombre, bloque) in casos {
+        let grande = repetir(bloque, 2 * 1024 * 1024);
+        let chico = repetir(bloque, 512 * 1024);
+        let (ratio, t_grande) = ratio_de_escalado(&|t| drop(extract(t)), &chico, &grande);
+        assert!(
+            ratio < RATIO_MAXIMO,
+            "{nombre}: 4× más texto tardó {ratio:.1}× más ({t_grande:?})"
+        );
+        assert!(t_grande < COTA_ABSOLUTA, "{nombre} tardó {t_grande:?}");
+        let p = extract(&grande);
         match nombre {
-            "rust x420k" => assert_eq!(p.skills.len(), 1),
-            _ => assert!(p.skills.is_empty()),
+            "rust repetido" => assert_eq!(p.skills.len(), 1),
+            _ => assert!(p.skills.is_empty(), "{nombre}"),
         }
     }
 }
