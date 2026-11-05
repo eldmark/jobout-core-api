@@ -99,6 +99,9 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/cvs/{id}", false),
         ("/api/v1/cvs/{id}/file", false),
         ("/api/v1/cvs/{id}/primary", false),
+        ("/api/v1/profile", false),
+        ("/api/v1/cvs/{id}/extraction", false),
+        ("/api/v1/cvs/{id}/extraction/confirm", false),
     ]
     .into_iter()
     .map(|(p, publica)| (p.to_string(), publica))
