@@ -4,6 +4,7 @@
 //! Ver `documentation/arquitectura.md` y `documentation/security.md` en jobout-docs.
 
 pub mod auth_user;
+pub mod blob;
 pub mod crypto;
 pub mod jwt;
 pub mod login_attempts;

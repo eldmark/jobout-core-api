@@ -1565,6 +1565,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "argon2",
+ "async-trait",
  "axum",
  "base64",
  "dotenvy",
