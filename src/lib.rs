@@ -13,6 +13,7 @@ pub mod password;
 pub mod routes;
 pub mod state;
 pub mod storage_cleanup;
+pub mod telemetry;
 
 use axum::Router;
 use tower_http::trace::TraceLayer;
