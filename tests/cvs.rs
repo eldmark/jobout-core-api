@@ -1190,7 +1190,8 @@ fn capturar_log() -> (Registro, tracing::subscriber::DefaultGuard) {
     let escritor = registro.clone();
     let guarda = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            // El filtro de producción al máximo (RUST_LOG=trace): es lo que hay que garantizar.
+            .with_env_filter(jobout_core_api::telemetry::env_filter(Some("trace")))
             .with_ansi(false)
             .with_writer(move || escritor.clone())
             .finish(),
@@ -1199,6 +1200,9 @@ fn capturar_log() -> (Registro, tracing::subscriber::DefaultGuard) {
 }
 
 const NOMBRE_SECRETO: &str = "curriculum-confidencial-de-ana";
+/// Un id que no es un UUID. Es lo que mandó el cliente en la URL: el log de peticiones lo registra
+/// (es normal, es su propia URL), pero la **respuesta de error no debe repetirlo**.
+const ID_MALFORMADO: &str = "esto-no-es-un-uuid-12345";
 const TEXTO_SECRETO: &str = "FRASESECRETADELCONTENIDO";
 
 /// L10 / S3 / S4 / S7: ni el nombre, ni el contenido, ni el texto, ni la clave aparecen en el log
@@ -1235,7 +1239,7 @@ async fn l10_nada_sensible_aparece_en_el_log_ni_en_los_errores() {
             .texto(),
     );
     respuestas.push(
-        simple(&app, "GET", &format!("{CVS}/{NOMBRE_SECRETO}/file"), &token)
+        simple(&app, "GET", &format!("{CVS}/{ID_MALFORMADO}/file"), &token)
             .await
             .texto(),
     );
@@ -1276,6 +1280,11 @@ async fn l10_nada_sensible_aparece_en_el_log_ni_en_los_errores() {
     }
     for respuesta in &respuestas {
         assert!(!respuesta.contains("storage_key"), "{respuesta}");
+        // Un error no repite lo que el cliente puso en la URL.
+        assert!(
+            !respuesta.contains(ID_MALFORMADO),
+            "la respuesta repite el id: {respuesta}"
+        );
     }
     db.cleanup().await;
 }
