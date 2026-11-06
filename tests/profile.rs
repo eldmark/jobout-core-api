@@ -883,6 +883,10 @@ fn capturar_log() -> (Registro, tracing::subscriber::DefaultGuard) {
             .with_writer(move || escritor.clone())
             .finish(),
     );
+    // Marca propia: se emite con el suscriptor de ESTA prueba ya activo, así que su recepción no
+    // depende de que `tracing` entregue eventos del servicio (que puede perderlos en una carrera
+    // entre pruebas que instalan suscriptores a la vez). Es la comprobación de cordura.
+    tracing::info!(target: "jobout_core_api::test", "captura-activa");
     (registro, guarda)
 }
 
@@ -948,7 +952,7 @@ async fn s3_los_errores_no_filtran_datos_personales() {
     assert_eq!(resp["error"], "datos_invalidos");
 
     let texto = log.texto();
-    assert!(!texto.is_empty());
+    assert!(texto.contains("captura-activa"), "no se capturó ningún log");
     for s in sensibles {
         assert!(!texto.contains(s), "el log filtra {s}");
     }
@@ -977,7 +981,7 @@ async fn s4_el_log_no_contiene_datos_personales() {
     assert_eq!(estado, StatusCode::NO_CONTENT);
 
     let texto = log.texto();
-    assert!(!texto.is_empty(), "no se capturó ningún log");
+    assert!(texto.contains("captura-activa"), "no se capturó ningún log");
     for s in [
         TELEFONO,
         "4567",
