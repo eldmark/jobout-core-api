@@ -44,6 +44,9 @@ pub struct RouteSpec {
     /// Métodos que atiende `handler`. Un test comprueba que coinciden con los reales.
     pub methods: &'static [&'static str],
     pub access: Access,
+    /// Tope de cuerpo propio de esta ruta, en bytes. `None` = el global (`MAX_BODY_BYTES`).
+    /// Existe para la subida de archivos; nadie debería declarar más de 6 MB (lo vigila un test).
+    pub body_limit: Option<usize>,
     pub handler: MethodRouter<AppState>,
 }
 
@@ -66,6 +69,11 @@ pub fn build(specs: Vec<RouteSpec>, state: AppState) -> Router {
             Access::Authenticated => spec
                 .handler
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth)),
+        };
+        // El tope propio va en la ruta y gana al global, que se aplica por fuera.
+        let handler = match spec.body_limit {
+            Some(max) => handler.layer(DefaultBodyLimit::max(max)),
+            None => handler,
         };
         router = router.route(spec.path, handler);
     }

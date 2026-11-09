@@ -37,6 +37,7 @@ fn app(db: &TestDb) -> Router {
         db: db.conn.clone(),
         pii,
         jwt: jwt(),
+        blobs: jobout_core_api::blob::memory_store(),
     })
 }
 
@@ -343,7 +344,8 @@ fn capturar_log() -> (Registro, tracing::subscriber::DefaultGuard) {
     let escritor = registro.clone();
     let guarda = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            // El filtro de producción al máximo (RUST_LOG=trace): es lo que hay que garantizar.
+            .with_env_filter(jobout_core_api::telemetry::env_filter(Some("trace")))
             .with_ansi(false)
             .with_writer(move || escritor.clone())
             .finish(),
