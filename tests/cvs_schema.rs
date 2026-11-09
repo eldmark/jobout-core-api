@@ -35,7 +35,7 @@ async fn c1_las_tablas_de_cv_son_reversibles() {
         assert_eq!(n, 1, "falta la tabla {t}");
     }
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(1)).await.expect("down");
+    Migrator::down(&db.conn, Some(2)).await.expect("down");
     for t in TABLAS {
         let n = db
             .count(&format!(
