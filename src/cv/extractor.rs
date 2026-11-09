@@ -436,6 +436,8 @@ enum Section {
     Preamble,
     Profile,
     Experience,
+    /// Intereses y referencias: aquí ninguna palabra es una skill de la persona.
+    NoSkills,
     Other,
 }
 
@@ -505,10 +507,6 @@ fn heading_section(ws: &[&str]) -> Option<Section> {
         "cursos",
         "proyectos",
         "projects",
-        "referencias",
-        "references",
-        "intereses",
-        "interests",
         "publicaciones",
         "premios",
         "awards",
@@ -519,11 +517,14 @@ fn heading_section(ws: &[&str]) -> Option<Section> {
         "personal information",
         "informacion personal",
     ];
+    const NO_SKILLS: &[&str] = &["intereses", "interests", "referencias", "references"];
     if ws.is_empty() || ws.len() > 5 {
         return None;
     }
     let key = ws.join(" ");
-    if PROFILE.contains(&key.as_str()) {
+    if NO_SKILLS.contains(&key.as_str()) {
+        Some(Section::NoSkills)
+    } else if PROFILE.contains(&key.as_str()) {
         Some(Section::Profile)
     } else if EXPERIENCE.contains(&key.as_str()) {
         Some(Section::Experience)
@@ -538,6 +539,15 @@ fn clean_lines(text: &str) -> Vec<Line> {
     let mut out = Vec::new();
     let mut section = Section::Preamble;
     for raw in text.lines() {
+        // Las celdas de una tabla llegan separadas por tabulaciones: se convierten en `|`,
+        // el separador que el resto del extractor ya entiende.
+        let tabbed;
+        let raw = if raw.contains('\t') {
+            tabbed = raw.replace('\t', " | ");
+            tabbed.as_str()
+        } else {
+            raw
+        };
         let (clean, redacted, remaining) = redact_line(raw);
         if clean.is_empty() || (redacted && remaining <= 2) {
             continue;
@@ -681,7 +691,18 @@ fn is_current(w: &str) -> bool {
 fn is_range_sep(w: &str) -> bool {
     matches!(
         w,
-        "-" | "–" | "—" | "−" | "~" | "a" | "al" | "to" | "hasta" | "until" | "through" | "thru"
+        "-" | "–"
+            | "—"
+            | "−"
+            | "~"
+            | "|"
+            | "a"
+            | "al"
+            | "to"
+            | "hasta"
+            | "until"
+            | "through"
+            | "thru"
     )
 }
 
@@ -828,7 +849,7 @@ fn has_title_word(folded: &str) -> bool {
         "desarroll",
         "engineer",
         "ingenier",
-        "analy",
+        "analyst",
         "analis",
         "manager",
         "gerente",
@@ -959,11 +980,13 @@ fn build_header(
     }
     if let Some((l, r, title_first)) = split_header(&text) {
         let (lk, rk) = (has_title_word(&fold(&l)), has_title_word(&fold(&r)));
+        let left_is_title = lk;
         return Some(if title_first {
             Header {
                 company: r,
                 title: l,
-                certain: true,
+                // «Worked at Acme»: si la izquierda no es un cargo, no se sabe qué es.
+                certain: left_is_title,
                 lines_used: used,
             }
         } else if lk != rk {
@@ -1101,6 +1124,50 @@ fn extract_experiences(lines: &[Line]) -> Vec<ExperienceProposal> {
     out
 }
 
+/// Skills cuyo nombre o alias es también una palabra común («go», «next», «rest»…). En prosa
+/// no cuentan; ver `ambiguous_is_skill`.
+const AMBIGUOUS: &[&str] = &[
+    "go", "next", "rest", "nest", "shell", "sh", "c", "ci", "cd", "spring", "swift", "unity",
+    "express", "torch", "elastic", "spark",
+];
+
+/// ¿La palabra ambigua en `pos` está usada como skill? Sí si la línea parece una lista (dos o
+/// más separadores o una etiqueta «Stack: …»), o si está escrita con mayúscula inicial y no abre
+/// frase, o es una línea corta con mayúscula. En cualquier otro caso es una palabra corriente.
+fn ambiguous_is_skill(line: &Line, original: &[(usize, usize)], pos: usize) -> bool {
+    let text = line.text.as_str();
+    let separators = text
+        .chars()
+        .filter(|c| matches!(c, ',' | ';' | '|' | '/' | '·' | '•'))
+        .count();
+    if separators >= 2 {
+        return true;
+    }
+    if let Some(colon) = text.find(':') {
+        if text[..colon].split_whitespace().count() <= 3 {
+            return true;
+        }
+    }
+    // Sin el mismo número de palabras no se puede ubicar la original: no se arriesga.
+    if original.len() != line.spans.len() {
+        return false;
+    }
+    let (a, b) = original[pos];
+    let word = &text[a..b];
+    if !word.chars().next().is_some_and(char::is_uppercase) {
+        return false;
+    }
+    if original.len() <= 3 {
+        return true;
+    }
+    let before = text[..a].trim_end_matches(|c: char| c.is_whitespace() || strip_marks(c));
+    !(before.is_empty() || before.ends_with(['.', '!', '?']))
+}
+
+fn strip_marks(c: char) -> bool {
+    matches!(c, '-' | '•' | '*' | '·' | '▪' | '–' | '—' | '●')
+}
+
 // ---------- extractor ----------
 
 pub struct DeterministicExtractor {
@@ -1143,13 +1210,41 @@ impl DeterministicExtractor {
     fn skills_in(&self, lines: &[Line]) -> Vec<SkillProposal> {
         let mut found: HashMap<usize, Confidence> = HashMap::new();
         for line in lines {
+            if line.section == Section::NoSkills {
+                continue;
+            }
             let toks = line.toks();
-            for (_, len, p) in find_phrases(&self.skill_index, &toks) {
-                let conf = if p.alias || (len == 1 && p.words[0].chars().count() <= 2) {
+            let mut matches = find_phrases(&self.skill_index, &toks);
+            // Una mención contenida en otra más larga («GitHub» en «GitHub Actions») no
+            // cuenta aparte. Barrido por posición: no hay comparaciones cuadráticas.
+            matches.sort_by_key(|(pos, len, p)| (*pos, std::cmp::Reverse(*len), p.entry));
+            let mut max_end_before = 0usize; // fin máximo de menciones que empiezan antes
+            let mut group_pos = usize::MAX;
+            let mut group_len = 0usize;
+            let mut group_max_end = 0usize;
+            let mut original: Option<Vec<(usize, usize)>> = None;
+            for (pos, len, p) in matches {
+                if pos != group_pos {
+                    max_end_before = max_end_before.max(group_max_end);
+                    group_pos = pos;
+                    group_len = len;
+                }
+                group_max_end = group_max_end.max(pos + len);
+                if len < group_len || pos + len <= max_end_before {
+                    continue;
+                }
+                let mut conf = if p.alias || (len == 1 && p.words[0].chars().count() <= 2) {
                     Confidence::Medium
                 } else {
                     Confidence::High
                 };
+                if len == 1 && AMBIGUOUS.contains(&p.words[0].as_str()) {
+                    let orig = original.get_or_insert_with(|| word_spans(&line.text));
+                    if !ambiguous_is_skill(line, orig, pos) {
+                        continue;
+                    }
+                    conf = conf.min(Confidence::Medium);
+                }
                 let e = found.entry(p.entry).or_insert(conf);
                 *e = (*e).max(conf);
             }
@@ -1196,7 +1291,21 @@ impl DeterministicExtractor {
                     .find(|s| *s >= end)
                     .unwrap_or(toks.len());
                 let after_hi = (end + 4).min(next_start);
-                let after = (end..after_hi).find_map(|k| proficiency_of(toks[k]).map(|l| (k, l)));
+                // «fluent in English and basic Portuguese»: un nivel pegado (solo espacios) a la
+                // mención siguiente, y no al idioma actual, es el nivel del siguiente.
+                let belongs_to_next = |k: usize| {
+                    k > end
+                        && k + 1 < toks.len()
+                        && mentions.iter().any(|m| m.0 == k + 1)
+                        && line.folded[line.spans[k].1..line.spans[k + 1].0]
+                            .chars()
+                            .all(char::is_whitespace)
+                };
+                let after = (end..after_hi).find_map(|k| {
+                    proficiency_of(toks[k])
+                        .filter(|_| !belongs_to_next(k))
+                        .map(|l| (k, l))
+                });
                 let level = if let Some((k, l)) = after {
                     claimed_upto = k + 1;
                     Some((l, Confidence::High))

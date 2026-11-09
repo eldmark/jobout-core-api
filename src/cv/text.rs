@@ -165,7 +165,7 @@ fn pdf_text(bytes: &[u8], max_pages: usize) -> Result<ExtractedText, TextError> 
     let mut read = 0usize;
     for n in numbers.iter().take(max_pages) {
         read += 1;
-        match doc.extract_text(&[*n]) {
+        match page_text(&doc, *n) {
             Ok(t) => {
                 text.push_str(&t);
                 if !text.ends_with('\n') {
@@ -180,6 +180,80 @@ fn pdf_text(bytes: &[u8], max_pages: usize) -> Result<ExtractedText, TextError> 
         return Err(TextError::Corrupt);
     }
     non_empty(text, total > max_pages, Some(total))
+}
+
+/// Texto de una página con saltos de línea en cada desplazamiento vertical (`Td`, `TD`, `T*`,
+/// `Tm`, `'`, `"`) y no solo al final del bloque `BT … ET`: `lopdf::extract_text` pega en una
+/// línea todo un bloque, y muchos generadores de PDF escriben la página entera en uno.
+fn page_text(doc: &lopdf::Document, number: u32) -> Result<String, lopdf::Error> {
+    use lopdf::{Encoding, Object};
+    fn push_operands(out: &mut String, enc: &Encoding, ops: &[Object]) {
+        for o in ops {
+            match o {
+                Object::String(bytes, _) => {
+                    if let Ok(t) = lopdf::Document::decode_text(enc, bytes) {
+                        out.push_str(&t);
+                    }
+                }
+                Object::Array(a) => {
+                    push_operands(out, enc, a);
+                }
+                Object::Integer(i) if *i < -100 => out.push(' '),
+                Object::Real(r) if *r < -100.0 => out.push(' '),
+                _ => {}
+            }
+        }
+    }
+    fn newline(out: &mut String) {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    let page_id = *doc
+        .get_pages()
+        .get(&number)
+        .ok_or(lopdf::Error::PageNumberNotFound(number))?;
+    let encodings: std::collections::BTreeMap<Vec<u8>, Encoding> = doc
+        .get_page_fonts(page_id)?
+        .into_iter()
+        .map(|(name, font)| font.get_font_encoding(doc).map(|e| (name, e)))
+        .collect::<Result<_, _>>()?;
+    let content = lopdf::content::Content::decode(&doc.get_page_content(page_id)?)?;
+    let mut out = String::new();
+    let mut current: Option<&Encoding> = None;
+    let num = |o: Option<&Object>| match o {
+        Some(Object::Integer(i)) => *i as f64,
+        Some(Object::Real(r)) => f64::from(*r),
+        _ => 0.0,
+    };
+    for op in &content.operations {
+        match op.operator.as_str() {
+            "Tf" => {
+                let name = op.operands.first().and_then(|o| o.as_name().ok());
+                current = name.and_then(|n| encodings.get(n));
+            }
+            "Tj" | "TJ" => {
+                if let Some(enc) = current {
+                    push_operands(&mut out, enc, &op.operands);
+                    if matches!(op.operands.first(), Some(Object::Array(_))) {
+                        out.push(' ');
+                    }
+                }
+            }
+            "'" | "\"" => {
+                newline(&mut out);
+                if let Some(enc) = current {
+                    push_operands(&mut out, enc, &op.operands);
+                }
+            }
+            "T*" => newline(&mut out),
+            "Td" | "TD" if num(op.operands.get(1)) != 0.0 => newline(&mut out),
+            "Tm" if num(op.operands.get(5)) != 0.0 => newline(&mut out),
+            "ET" => newline(&mut out),
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 fn docx_text(bytes: &[u8], max_bytes: u64) -> Result<ExtractedText, TextError> {
