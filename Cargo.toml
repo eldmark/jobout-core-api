@@ -29,6 +29,9 @@ migration = { version = "0.1.0", path = "migration" }
 argon2 = "0.6"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
+# Blob store (JB-20)
+async-trait = "0.1"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
