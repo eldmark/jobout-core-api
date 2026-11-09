@@ -79,7 +79,7 @@ async fn k1_los_catalogos_tienen_la_forma_estandar() {
 async fn k2_down_y_up_dejan_el_mismo_esquema() {
     let db = TestDb::migrated().await;
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(3)).await.expect("down");
+    Migrator::down(&db.conn, Some(4)).await.expect("down");
     for t in CATALOGOS {
         let n = db
             .count(&format!(
