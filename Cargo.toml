@@ -29,6 +29,9 @@ migration = { version = "0.1.0", path = "migration" }
 argon2 = "0.6"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
+# Blob store (JB-20)
+async-trait = "0.1"
+
 # CV extraction (JB-21)
 lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }

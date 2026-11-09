@@ -4,6 +4,10 @@ mod m20261104_000001_create_identity;
 mod m20261104_000002_create_privacy_events;
 mod m20261104_000003_create_plans_and_subscriptions;
 mod m20261104_000004_create_login_attempts;
+mod m20261105_000001_create_catalogs;
+mod m20261105_000002_create_profile;
+mod m20261105_000003_create_cvs;
+pub mod seeds;
 
 pub struct Migrator;
 
@@ -20,6 +24,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20261104_000002_create_privacy_events::Migration),
             Box::new(m20261104_000003_create_plans_and_subscriptions::Migration),
             Box::new(m20261104_000004_create_login_attempts::Migration),
+            Box::new(m20261105_000001_create_catalogs::Migration),
+            Box::new(m20261105_000002_create_profile::Migration),
+            Box::new(m20261105_000003_create_cvs::Migration),
         ]
     }
 }

@@ -23,7 +23,7 @@ use axum::{
     Router,
 };
 
-use super::{auth, health, me};
+use super::{auth, catalogs, health, me};
 use crate::{auth_user::AuthUser, state::AppState};
 
 /// Tope del cuerpo de cualquier petición. Todas las rutas actuales son JSON pequeños.
@@ -52,6 +52,7 @@ pub fn all() -> Vec<RouteSpec> {
     let mut rutas = health::routes();
     rutas.extend(auth::routes());
     rutas.extend(me::routes());
+    rutas.extend(catalogs::routes());
     rutas
 }
 
