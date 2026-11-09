@@ -57,6 +57,7 @@ fn estado_sin_base() -> AppState {
         db: DatabaseConnection::Disconnected,
         pii: pii(),
         jwt: jwt(),
+        blobs: jobout_core_api::blob::memory_store(),
     }
 }
 
@@ -93,6 +94,14 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/auth/refresh", true),
         ("/api/v1/auth/logout", true),
         ("/api/v1/me", false),
+        ("/api/v1/catalogs/{nombre}", false),
+        ("/api/v1/cvs", false),
+        ("/api/v1/cvs/{id}", false),
+        ("/api/v1/cvs/{id}/file", false),
+        ("/api/v1/cvs/{id}/primary", false),
+        ("/api/v1/profile", false),
+        ("/api/v1/cvs/{id}/extraction", false),
+        ("/api/v1/cvs/{id}/extraction/confirm", false),
     ]
     .into_iter()
     .map(|(p, publica)| (p.to_string(), publica))
@@ -240,6 +249,7 @@ async fn t5_la_proteccion_no_depende_del_handler() {
         db: db.conn.clone(),
         pii: pii(),
         jwt: jwt(),
+        blobs: jobout_core_api::blob::memory_store(),
     };
     // Una cuenta real, para tener un token válido.
     let (_, cuenta) = {
@@ -270,12 +280,14 @@ async fn t5_la_proteccion_no_depende_del_handler() {
                 path: "/prueba/protegida",
                 methods: &["GET"],
                 access: Access::Authenticated,
+                body_limit: None,
                 handler: get(sin_extractor),
             },
             RouteSpec {
                 path: "/prueba/publica",
                 methods: &["GET"],
                 access: Access::Public("Ruta de prueba, pública a propósito para este test."),
+                body_limit: None,
                 handler: get(sin_extractor),
             },
         ],
@@ -334,4 +346,83 @@ async fn t8_el_tope_de_cuerpo_es_global() {
         .await
         .unwrap();
     assert_eq!(respuesta.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+// ------------------------------------------------ límite de cuerpo por ruta
+
+async fn medir(body: axum::body::Bytes) -> String {
+    body.len().to_string()
+}
+
+async fn subir(app: &Router, ruta: &str, bytes: usize) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ruta)
+                .body(Body::from(vec![b'x'; bytes]))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+/// T9: una ruta puede declarar su propio tope de cuerpo (la subida de un CV necesita MBs) y eso
+/// **no** afecta a las demás, que siguen con el tope global de 8 KB.
+#[tokio::test]
+async fn t9_el_tope_de_cuerpo_se_puede_declarar_por_ruta() {
+    let app = table::build(
+        vec![
+            RouteSpec {
+                path: "/prueba/grande",
+                methods: &["POST"],
+                access: Access::Public("Ruta de prueba con un tope de cuerpo propio, a propósito."),
+                body_limit: Some(64 * 1024),
+                handler: axum::routing::post(medir),
+            },
+            RouteSpec {
+                path: "/prueba/normal",
+                methods: &["POST"],
+                access: Access::Public("Ruta de prueba con el tope global, a propósito."),
+                body_limit: None,
+                handler: axum::routing::post(medir),
+            },
+        ],
+        estado_sin_base(),
+    );
+
+    assert_eq!(
+        subir(&app, "/prueba/grande", 20 * 1024).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        subir(&app, "/prueba/grande", 65 * 1024).await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "el tope propio también tiene que cortar"
+    );
+    assert_eq!(
+        subir(&app, "/prueba/normal", 4 * 1024).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        subir(&app, "/prueba/normal", 20 * 1024).await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "las demás rutas conservan el tope global de 8 KB"
+    );
+}
+
+/// T10: ninguna ruta de la aplicación declara un tope mayor que 6 MB (5 MB de CV más el
+/// sobre del multipart). Evita que alguien «arregle» un 413 con un tope enorme.
+#[test]
+fn t10_ningun_tope_propio_supera_6_mb() {
+    for r in table::all() {
+        if let Some(n) = r.body_limit {
+            assert!(
+                n <= 6 * 1024 * 1024,
+                "{} declara un tope de {n} bytes",
+                r.path
+            );
+        }
+    }
 }

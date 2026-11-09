@@ -9,7 +9,7 @@ edition = "2021"
 rust-version = "1.88"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
@@ -29,6 +29,9 @@ migration = { version = "0.1.0", path = "migration" }
 argon2 = "0.6"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
+# Blob store (JB-20)
+async-trait = "0.1"
+
 # CV extraction (JB-21)
 lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -39,3 +42,4 @@ unicode-normalization = "0.1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 uuid = { version = "1.26.1", features = ["v7"] }
+futures-util = "0.3"

@@ -29,6 +29,7 @@ pub fn routes() -> Vec<RouteSpec> {
         path: "/api/v1/me",
         methods: &["GET", "DELETE"],
         access: Access::Authenticated,
+        body_limit: None,
         handler: get(me).delete(delete_me),
     }]
 }
@@ -181,6 +182,39 @@ async fn delete_me(
 
     // Todo o nada: la constancia y el borrado van en la misma transacción.
     let txn = state.db.begin().await.map_err(db("begin"))?;
+
+    // Las claves de los archivos del CV se leen ANTES de borrar: después las FK en cascada ya
+    // se llevaron `cvs`. Van a la bandeja (cifradas de nuevo) en esta misma transacción, así que
+    // la cuenta no puede quedar borrada sin que su archivo quede anotado para borrarse.
+    let claves = txn
+        .query_all(stmt(
+            "SELECT c.storage_key FROM cvs c JOIN applicants a ON a.id = c.applicant_id \
+             WHERE a.user_id = $1::uuid",
+            vec![user.id.clone().into()],
+        ))
+        .await
+        .map_err(db("leer_archivos"))?;
+    let mut pendientes: Vec<(String, String)> = Vec::with_capacity(claves.len());
+    for fila in claves {
+        let cifrada: Vec<u8> = fila.try_get_by_index(0).map_err(db("leer_clave"))?;
+        let clave = state.pii.decrypt(&cifrada).map_err(|_| {
+            tracing::error!(donde = "descifrar_clave", "error interno");
+            ApiError::Internal
+        })?;
+        let nueva = state.pii.encrypt(&clave).map_err(|_| {
+            tracing::error!(donde = "cifrar_clave", "error interno");
+            ApiError::Internal
+        })?;
+        let id = migration::new_id().to_string();
+        txn.execute(stmt(
+            "INSERT INTO pending_storage_deletions (id, storage_key) VALUES ($1::uuid, $2)",
+            vec![id.clone().into(), nueva.into()],
+        ))
+        .await
+        .map_err(db("encolar_archivo"))?;
+        pendientes.push((id, clave));
+    }
+
     txn.execute(stmt(
         "INSERT INTO privacy_events (id, subject_hash, kind) \
          VALUES ($1::uuid, $2, 'account_deleted')",
@@ -207,5 +241,26 @@ async fn delete_me(
         return Err(ApiError::Gone);
     }
     txn.commit().await.map_err(db("commit"))?;
+
+    // La cuenta ya no existe. Borrar los archivos es el mejor esfuerzo: lo que falle se queda
+    // en la bandeja y lo reintenta `storage_cleanup`. Nunca cambia la respuesta ni se loguea
+    // la clave.
+    for (id, clave) in pendientes {
+        if state.blobs.delete(&clave).await.is_err() {
+            tracing::warn!(donde = "borrar_archivo", "archivo pendiente de borrar");
+            continue;
+        }
+        if state
+            .db
+            .execute(stmt(
+                "DELETE FROM pending_storage_deletions WHERE id = $1::uuid",
+                vec![id.into()],
+            ))
+            .await
+            .is_err()
+        {
+            tracing::warn!(donde = "quitar_de_bandeja", "no se pudo vaciar la bandeja");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
