@@ -7,6 +7,7 @@ pub mod auth_user;
 pub mod blob;
 pub mod crypto;
 pub mod cv;
+pub mod interview;
 pub mod jwt;
 pub mod login_attempts;
 pub mod password;
