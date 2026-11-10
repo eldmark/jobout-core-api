@@ -12,8 +12,17 @@ mod scripted;
 pub mod store_crypto;
 mod text;
 
+pub use bank::closing as closing_message;
 pub use deterministic::DeterministicEngine;
 pub use scripted::ScriptedEngine;
+
+/// The engine as the application holds it: shared between requests, so it must be thread-safe.
+pub type SharedEngine = std::sync::Arc<dyn InterviewEngine + Send + Sync>;
+
+/// The engine of the text-only phase.
+pub fn default_engine() -> SharedEngine {
+    std::sync::Arc::new(DeterministicEngine)
+}
 
 /// Who wrote a message of the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

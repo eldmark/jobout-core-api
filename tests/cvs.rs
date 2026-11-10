@@ -201,6 +201,7 @@ fn app(db: &TestDb, almacen: Arc<Almacen>) -> Router {
         pii: pii(),
         jwt: jwt(),
         blobs: almacen,
+        engine: jobout_core_api::interview::default_engine(),
     })
 }
 

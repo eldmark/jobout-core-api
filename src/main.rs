@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
         pii: Arc::new(pii),
         jwt: Arc::new(jwt),
         blobs: Arc::new(blobs),
+        engine: jobout_core_api::interview::default_engine(),
     };
 
     let port: u16 = std::env::var("PORT")

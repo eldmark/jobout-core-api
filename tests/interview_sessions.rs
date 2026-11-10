@@ -54,6 +54,7 @@ fn app(db: &TestDb) -> Router {
         pii: pii(),
         jwt: jwt(),
         blobs: jobout_core_api::blob::memory_store(),
+        engine: jobout_core_api::interview::default_engine(),
     })
 }
 
