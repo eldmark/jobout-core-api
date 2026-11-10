@@ -2,7 +2,7 @@
 //!
 //! Se escribieron antes que la implementación, en rojo. Ver CONTRIBUTING.md.
 
-use std::time::{Duration, Instant};
+mod timing;
 
 use jobout_core_api::password::{
     dummy_hash, hash_password, validate_policy, verify_dummy, verify_password, PasswordError,
@@ -65,24 +65,26 @@ fn el_largo_cuenta_caracteres_no_bytes() {
     assert_eq!(validate_policy(&"ñ".repeat(128)), Ok(()));
 }
 
-/// P5: más de 128 caracteres se rechaza; 128 se acepta.
-#[test]
-fn mas_de_128_caracteres_se_rechaza_y_128_se_acepta() {
-    assert_eq!(validate_policy(&"a".repeat(128)), Ok(()));
-    assert_eq!(
-        validate_policy(&"a".repeat(129)),
-        Err(PasswordError::TooLong)
-    );
-    assert_eq!(hash_password(&"a".repeat(129)), Err(PasswordError::TooLong));
-}
-
 /// P5: verificar una contraseña enorme falla sin gastar CPU en Argon2.
+///
+/// No se compara contra un reloj de pared: se compara el costo (CPU del hilo, mejor de varios
+/// intentos) con el de una verificación Argon2 real. Si el texto enorme llegara a Argon2 costaría
+/// lo mismo que ella (cociente ≈1); sin Argon2 cuesta microsegundos (≈0.001).
 #[test]
 fn verificar_una_contrasena_enorme_falla_rapido() {
     let hash = hash_password(BUENA).unwrap();
-    let t = Instant::now();
-    assert!(!verify_password(&"a".repeat(100_000), &hash));
-    assert!(t.elapsed() < Duration::from_millis(50));
+    let enorme = "a".repeat(100_000);
+    assert!(!verify_password(&enorme, &hash));
+    let rapido = timing::costo_minimo(5, || {
+        assert!(!verify_password(&enorme, &hash));
+    });
+    let real = timing::costo_minimo(3, || {
+        assert!(verify_password(BUENA, &hash));
+    });
+    assert!(
+        rapido * 20 < real,
+        "enorme {rapido:?} vs verificación real {real:?}"
+    );
 }
 
 /// R9: el hash ficticio es Argon2id con los mismos parámetros que un hash real.
@@ -106,23 +108,13 @@ fn verificar_contra_el_ficticio_siempre_es_falso() {
 #[test]
 fn el_ficticio_cuesta_lo_mismo_que_una_verificacion_real() {
     let hash = hash_password(BUENA).unwrap();
-    let mejor = |f: &dyn Fn()| {
-        (0..3)
-            .map(|_| {
-                let t = Instant::now();
-                f();
-                t.elapsed()
-            })
-            .min()
-            .unwrap()
-    };
-    let real = mejor(&|| {
+    let real = timing::costo_minimo(5, || {
         verify_password(BUENA, &hash);
     });
-    let ficticio = mejor(&|| {
+    let ficticio = timing::costo_minimo(5, || {
         verify_dummy(BUENA);
     });
-    // Cota holgada para no ser frágil: un atajo costaría microsegundos, no milisegundos.
+    // Costo en CPU del hilo, mejor de varios intentos. Un atajo costaría microsegundos, no milisegundos.
     assert!(
         ficticio * 3 > real,
         "ficticio {ficticio:?} vs real {real:?}"

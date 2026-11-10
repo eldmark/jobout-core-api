@@ -2,7 +2,7 @@
 //!
 //! Se escribieron antes que la implementación, en rojo.
 
-use std::time::Instant;
+mod timing;
 
 use jobout_core_api::cv::extractor::{
     Confidence, CvExtractor, DeterministicExtractor, LanguageEntry, Proficiency, Proposal,
@@ -484,39 +484,31 @@ fn d10_salida_ordenada_por_nombre() {
 
 // ---------- D11: rendimiento ----------
 //
-// Un umbral de reloj absoluto («menos de 2 s») es inestable por naturaleza: en un ejecutor
-// compartido de CI la misma prueba tardó 2.4 s y en una máquina local 0.3 s. Lo que de verdad se
-// quiere garantizar es que **no hay comportamiento cuadrático**, así que se mide el ESCALADO: el
-// mismo trabajo con un texto 4 veces mayor tiene que tardar ≈4 veces más (lineal), no ≈16
-// (cuadrático). Se toma el mejor de varios intentos para quitar ruido. Queda además una cota
-// absoluta muy holgada como red de seguridad contra un cuelgue.
+// Un umbral de reloj absoluto («menos de 2 s») es inestable por naturaleza, y un cociente de
+// relojes de pared también: bajo carga de CPU el mismo trabajo tardó 10× más en una pasada y
+// no en la otra, y la prueba falló sin que el algoritmo cambiara. Lo que de verdad se quiere
+// garantizar es que **no hay comportamiento cuadrático**, así que se mide el ESCALADO (el mismo
+// trabajo con un texto 4 veces mayor tiene que costar ≈4 veces más, no ≈16) y se mide en
+// **tiempo de CPU del hilo**, no de pared, tomando el mejor de varias repeticiones
+// (ver `tests/timing`). Queda además una cota absoluta muy holgada contra un cuelgue.
 
 use std::time::Duration;
 
-const INTENTOS: usize = 3;
+const INTENTOS: usize = 5;
 /// Un algoritmo lineal da ≈4; uno cuadrático ≈16. 10 deja margen para el ruido sin dejar pasar lo cuadrático.
 const RATIO_MAXIMO: f64 = 10.0;
 /// Cota absoluta, solo contra cuelgues (no contra lentitud).
 const COTA_ABSOLUTA: Duration = Duration::from_secs(30);
+/// Por debajo de esto el reloj no distingue el costo: se usa como divisor mínimo.
+const PISO: Duration = Duration::from_micros(200);
 
-fn mejor_tiempo(f: &dyn Fn(&str), texto: &str) -> Duration {
-    (0..INTENTOS)
-        .map(|_| {
-            let t0 = Instant::now();
-            f(texto);
-            t0.elapsed()
-        })
-        .min()
-        .unwrap()
-}
-
-/// Cuánto más tarda `f` con `grande` que con `chico`. Se descarta el ruido de arranque haciendo
-/// una pasada previa en vacío.
+/// Cuánto más cuesta `f` con `grande` que con `chico`, y el costo con `grande`. Una pasada
+/// previa en vacío descarta el ruido de arranque.
 fn ratio_de_escalado(f: &dyn Fn(&str), chico: &str, grande: &str) -> (f64, Duration) {
     f(chico);
-    let t_chico = mejor_tiempo(f, chico).max(Duration::from_micros(200));
-    let t_grande = mejor_tiempo(f, grande);
-    (t_grande.as_secs_f64() / t_chico.as_secs_f64(), t_grande)
+    let t_chico = timing::costo_minimo(INTENTOS, || f(chico));
+    let t_grande = timing::costo_minimo(INTENTOS, || f(grande));
+    (timing::ratio(t_chico, t_grande, PISO), t_grande)
 }
 
 /// Texto de al menos `bytes` bytes repitiendo `bloque`.
@@ -524,7 +516,24 @@ fn repetir(bloque: &str, bytes: usize) -> String {
     bloque.repeat(bytes / bloque.len() + 1)
 }
 
+/// La aritmética del medidor, sin reloj: es determinista.
+#[test]
+fn d11_el_ratio_se_calcula_y_se_acota_por_abajo() {
+    let ms = Duration::from_millis;
+    let casi = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    assert!(casi(timing::ratio(ms(10), ms(40), PISO), 4.0));
+    assert!(casi(timing::ratio(ms(10), ms(160), PISO), 16.0));
+    // Un divisor casi nulo no dispara el cociente: 400 µs / 200 µs.
+    let chico = Duration::ZERO;
+    assert!(casi(
+        timing::ratio(chico, Duration::from_micros(400), PISO),
+        2.0
+    ));
+}
+
 /// El medidor mismo tiene que distinguir lo lineal de lo cuadrático; si no, D11 no prueba nada.
+/// Los tamaños dejan un hueco enorme (≈12× el texto: ≈12 lineal, ≈144 cuadrático) frente al
+/// umbral, de modo que el ruido restante no puede cerrarlo.
 #[test]
 fn d11_el_medidor_distingue_lo_lineal_de_lo_cuadratico() {
     let lineal = |t: &str| {
@@ -544,16 +553,16 @@ fn d11_el_medidor_distingue_lo_lineal_de_lo_cuadratico() {
         }
         std::hint::black_box(acc);
     };
-    let (chico, grande) = ("a".repeat(2_000), "a".repeat(8_000));
+    let (chico, grande) = ("a".repeat(1_000), "a".repeat(12_000));
     let (r_lineal, _) = ratio_de_escalado(&lineal, &chico, &grande);
     let (r_cuadratico, _) = ratio_de_escalado(&cuadratico, &chico, &grande);
     assert!(
-        r_cuadratico > RATIO_MAXIMO,
+        r_cuadratico > RATIO_MAXIMO * 3.0,
         "el medidor no detecta lo cuadrático (ratio {r_cuadratico:.1})"
     );
     assert!(
-        r_lineal < r_cuadratico,
-        "lineal {r_lineal:.1} no es menor que cuadrático {r_cuadratico:.1}"
+        r_lineal < RATIO_MAXIMO,
+        "el medidor toma lo lineal por cuadrático (ratio {r_lineal:.1})"
     );
 }
 
