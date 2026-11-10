@@ -174,6 +174,12 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ),
         ("/api/v1/offers", false, None),
         ("/api/v1/offers/{id}", false, None),
+        ("/api/v1/offers/{id}/applications", false, None),
+        ("/api/v1/me/applications", false, None),
+        ("/api/v1/me/applications/{id}", false, None),
+        ("/api/v1/me/applications/{id}/withdraw", false, None),
+        ("/api/v1/me/external-applications", false, None),
+        ("/api/v1/me/external-applications/{id}", false, None),
     ]
     .into_iter()
     .map(|(p, publica, permiso)| (p.to_string(), publica, permiso.map(str::to_string)))

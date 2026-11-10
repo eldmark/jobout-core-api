@@ -115,7 +115,6 @@ async fn las_tablas_y_columnas_existen_con_su_forma() {
         ("salary_range_id", "YES"),
         ("working_shift_id", "YES"),
         ("contract_type_id", "YES"),
-        ("applications_count", "NO"),
         ("created_at", "NO"),
         ("updated_at", "NO"),
     ] {
@@ -193,7 +192,7 @@ async fn el_estado_es_un_enum_con_cuatro_valores_y_arranca_en_draft() {
     );
     oferta(&db, company, "", "").await.unwrap();
     assert_eq!(
-        db.count("SELECT count(*) FROM job_offers WHERE status = 'draft' AND featured = false AND is_confidential = false AND applications_count = 0")
+        db.count("SELECT count(*) FROM job_offers WHERE status = 'draft' AND featured = false AND is_confidential = false")
             .await,
         1
     );
@@ -475,7 +474,7 @@ async fn la_migracion_baja_y_sube() {
     let db = TestDb::migrated().await;
     let antes = esquema(&db).await;
     assert!(antes.iter().any(|l| l.starts_with("job_offers.name")));
-    Migrator::down(&db.conn, Some(1)).await.expect("down");
+    Migrator::down(&db.conn, Some(2)).await.expect("down");
     for t in [
         "job_offers",
         "job_offer_skills",
@@ -511,7 +510,7 @@ async fn la_migracion_baja_y_sube() {
 #[tokio::test]
 async fn migrar_con_sesiones_que_apuntan_a_ofertas_inexistentes_las_anula() {
     let db = TestDb::migrated().await;
-    Migrator::down(&db.conn, Some(1)).await.unwrap();
+    Migrator::down(&db.conn, Some(2)).await.unwrap();
     let (_, applicant) = common::nuevo_applicant(&db, "huerfano").await;
     let sql = crear_sesion_sql(&db, applicant, Some(uuid::Uuid::now_v7())).await;
     db.exec(&sql).await.unwrap();

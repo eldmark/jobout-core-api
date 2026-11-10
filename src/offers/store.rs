@@ -45,7 +45,7 @@ pub async fn load<C: ConnectionTrait>(
 ) -> Result<Option<Stored>, DbErr> {
     let sql = format!(
         "SELECT o.id::text, o.status::text, o.publication_date::text, {closed}, {created}, {updated}, \
-                o.applications_count, o.name, o.description, o.is_confidential, \
+                (SELECT count(*)::int FROM job_applications a WHERE a.job_offer_id = o.id), o.name, o.description, o.is_confidential, \
                 o.is_experience_required, o.required_experience, o.main_language_id::text, \
                 o.schedule, o.required_availability_to_travel, o.vacancies, o.hiring_date::text, \
                 o.profession_id::text, o.employment_sector_id::text, o.job_hierarchy_id::text, \
@@ -401,7 +401,8 @@ pub async fn list<C: ConnectionTrait>(
     };
     let sql = format!(
         "SELECT id::text, name, status::text, is_confidential, vacancies, publication_date::text, \
-                applications_count, {created}, (EXTRACT(EPOCH FROM created_at) * 1000000)::bigint \
+                (SELECT count(*)::int FROM job_applications a WHERE a.job_offer_id = job_offers.id), \
+                {created}, (EXTRACT(EPOCH FROM created_at) * 1000000)::bigint \
          FROM job_offers \
          WHERE company_id = $1::uuid \
            AND ($2::text IS NULL OR status::text = $2) \

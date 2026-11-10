@@ -1,9 +1,11 @@
 pub mod admin_companies;
+pub mod applications;
 pub mod auth;
 pub mod catalogs;
 pub mod companies;
 pub mod company_support;
 pub mod cvs;
+pub mod external_applications;
 pub mod health;
 pub mod interview_catalog;
 pub mod interviews;
