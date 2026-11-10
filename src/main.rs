@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use jobout_core_api::{
-    app_with_state, blob::LocalBlobStore, crypto::PiiKeys, interview_store, jwt::JwtKeys,
+    app_with_state, blob::LocalBlobStore, crypto::PiiKeys, interview_store, jwt::JwtKeys, offers,
     state::AppState, storage_cleanup,
 };
 use sea_orm::Database;
@@ -68,10 +68,24 @@ async fn shutdown() {
 async fn cleanup_loop(state: AppState, mut parada: tokio::sync::watch::Receiver<bool>) {
     let mut reloj = tokio::time::interval(std::time::Duration::from_secs(60));
     reloj.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut vueltas: u64 = 0;
     loop {
         tokio::select! {
             _ = reloj.tick() => {}
             _ = parada.changed() => return,
+        }
+        vueltas += 1;
+        // OF9: una vez por hora (y al arrancar) cierra las ofertas cuya fecha de contratación
+        // pasó. Es un solo UPDATE idempotente; el reloj es el del sistema.
+        if vueltas % 60 == 1 {
+            let ahora = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX));
+            match offers::close_expired(&state.db, ahora).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(cerradas = n, "cierre automático de ofertas"),
+                Err(_) => tracing::error!(donde = "cierre_de_ofertas", "error interno"),
+            }
         }
         match storage_cleanup::process_pending_deletions(&state).await {
             Ok(informe) if informe.deleted + informe.failed > 0 => {

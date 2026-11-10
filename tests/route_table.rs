@@ -154,6 +154,24 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
             false,
             Some("company.verify"),
         ),
+        ("/api/v1/company/offers", false, Some("offer.create")),
+        ("/api/v1/company/offers", false, Some("offer.update")),
+        ("/api/v1/company/offers/{id}", false, Some("offer.update")),
+        (
+            "/api/v1/company/offers/{id}/publish",
+            false,
+            Some("offer.publish"),
+        ),
+        (
+            "/api/v1/company/offers/{id}/pause",
+            false,
+            Some("offer.publish"),
+        ),
+        (
+            "/api/v1/company/offers/{id}/close",
+            false,
+            Some("offer.close"),
+        ),
     ]
     .into_iter()
     .map(|(p, publica, permiso)| (p.to_string(), publica, permiso.map(str::to_string)))

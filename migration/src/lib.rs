@@ -14,6 +14,7 @@ mod m20261108_000003_create_usage_ledger;
 mod m20261108_000004_seed_recruiter_roles;
 mod m20261110_000001_create_offer_catalogs;
 mod m20261110_000002_create_companies;
+mod m20261110_000003_create_job_offers;
 pub mod offer_seeds;
 pub mod seeds;
 
@@ -41,6 +42,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261108_000004_seed_recruiter_roles::Migration),
             Box::new(m20261110_000001_create_offer_catalogs::Migration),
             Box::new(m20261110_000002_create_companies::Migration),
+            Box::new(m20261110_000003_create_job_offers::Migration),
         ]
     }
 }

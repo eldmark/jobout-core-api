@@ -6,12 +6,14 @@
 pub mod auth_user;
 pub mod blob;
 pub mod company_gate;
+pub mod company_scope;
 pub mod crypto;
 pub mod cv;
 pub mod interview;
 pub mod interview_store;
 pub mod jwt;
 pub mod login_attempts;
+pub mod offers;
 pub mod password;
 pub mod quota;
 pub mod routes;

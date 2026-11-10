@@ -8,5 +8,6 @@ pub mod health;
 pub mod interview_catalog;
 pub mod interviews;
 pub mod me;
+pub mod offers;
 pub mod profile;
 pub mod table;

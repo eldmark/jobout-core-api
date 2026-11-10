@@ -89,9 +89,10 @@ async fn solo_el_admin_de_plataforma_entra_y_no_lee_nada_mas() {
         m.get("/api/v1/company", &admin).await.status,
         StatusCode::NOT_FOUND
     );
+    // Las ofertas piden `offer.update`, que el admin de plataforma no tiene: 403, no 404.
     assert_eq!(
         m.get("/api/v1/company/offers", &admin).await.status,
-        StatusCode::NOT_FOUND
+        StatusCode::FORBIDDEN
     );
     m.db.cleanup().await;
 }
