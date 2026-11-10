@@ -87,7 +87,7 @@ async fn e1_las_tablas_de_sesiones_son_reversibles() {
         assert!(existe(&db, t).await, "falta la tabla {t}");
     }
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(1)).await.expect("down");
+    Migrator::down(&db.conn, Some(2)).await.expect("down");
     for t in TABLAS {
         assert!(!existe(&db, t).await, "down debe quitar {t}");
     }

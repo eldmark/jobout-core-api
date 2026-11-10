@@ -12,6 +12,7 @@ pub mod interview_store;
 pub mod jwt;
 pub mod login_attempts;
 pub mod password;
+pub mod quota;
 pub mod routes;
 pub mod state;
 pub mod storage_cleanup;

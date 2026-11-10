@@ -48,7 +48,11 @@ fn jwt() -> Arc<JwtKeys> {
     Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap())
 }
 
+/// Estas pruebas crean muchas sesiones con la misma persona: la cuota mensual se mide en
+/// `tests/interview_quota.rs`, aquí se apaga con el interruptor de desarrollo.
 fn app(db: &TestDb) -> Router {
+    static UNA_VEZ: std::sync::Once = std::sync::Once::new();
+    UNA_VEZ.call_once(|| std::env::set_var("ENFORCE_PLAN_LIMITS", "false"));
     app_with_state(AppState {
         db: db.conn.clone(),
         pii: pii(),
@@ -700,13 +704,23 @@ async fn s6b_la_violacion_del_indice_se_traduce_a_sesion_abierta() {
     let r = id_recruiter(&w.db, "ana").await;
     let n = id_nivel(&w.db, "junior").await;
 
-    let resultado =
-        interview_store::create_session(&w.db.conn, &pii(), w.applicant, r, n, "¿Quién eres?")
-            .await
-            .expect("no debe ser un error");
+    let resultado = interview_store::create_session(
+        &w.db.conn,
+        &pii(),
+        w.applicant,
+        r,
+        n,
+        "¿Quién eres?",
+        jobout_core_api::quota::QuotaPolicy {
+            enforce: false,
+            now_micros: 0,
+        },
+    )
+    .await
+    .expect("no debe ser un error");
     match resultado {
         CreateOutcome::OpenExists { session_id } => assert_eq!(session_id, abierta),
-        CreateOutcome::Created { .. } => panic!("se creó una segunda sesión abierta"),
+        other => panic!("se esperaba OpenExists, no {other:?}"),
     }
     assert_eq!(
         w.db.count("SELECT count(*) FROM interview_sessions").await,

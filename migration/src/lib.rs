@@ -10,6 +10,7 @@ mod m20261105_000002_create_profile;
 mod m20261105_000003_create_cvs;
 mod m20261108_000001_create_interview_catalog;
 mod m20261108_000002_create_interviews;
+mod m20261108_000003_create_usage_ledger;
 pub mod seeds;
 
 pub struct Migrator;
@@ -32,6 +33,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261105_000003_create_cvs::Migration),
             Box::new(m20261108_000001_create_interview_catalog::Migration),
             Box::new(m20261108_000002_create_interviews::Migration),
+            Box::new(m20261108_000003_create_usage_ledger::Migration),
         ]
     }
 }
