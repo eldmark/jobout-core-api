@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use super::table::{Access, RouteSpec};
 use crate::{
     auth_user::AuthUser,
+    company_gate::{self, Gate},
     company_scope::{company_of, CompanyCtx},
     offers::{
         input::{self, InputError, Offer},
@@ -603,17 +604,24 @@ async fn publish(
     if actual.status != "draft" && actual.status != "paused" {
         return Err(ESTADO_INVALIDO);
     }
-    if !ctx.verified {
-        return Err(ApiError::Forbidden(
-            "empresa_no_verificada",
-            "Tu empresa todavía no está verificada.",
-        ));
-    }
-    if !ctx.membership_active {
-        return Err(ApiError::Forbidden(
-            "membresia_vencida",
-            "La membresía de tu empresa no está vigente.",
-        ));
+    let company = uuid::Uuid::parse_str(&ctx.company_id).map_err(|_| ApiError::Internal)?;
+    match company_gate::check(&txn, company)
+        .await
+        .map_err(db("publicar_gate"))?
+    {
+        Ok(()) => {}
+        Err(Gate::NotVerified) => {
+            return Err(ApiError::Forbidden(
+                "empresa_no_verificada",
+                "Tu empresa todavía no está verificada.",
+            ))
+        }
+        Err(Gate::MembershipExpired) => {
+            return Err(ApiError::Forbidden(
+                "membresia_vencida",
+                "La membresía de tu empresa no está vigente.",
+            ))
+        }
     }
     let hoy = store::today(&txn).await.map_err(db("hoy"))?;
     let faltan = input::missing_for_publish(&actual.offer, ymd(&hoy)?);
