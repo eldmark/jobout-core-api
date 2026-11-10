@@ -11,6 +11,7 @@ mod m20261105_000003_create_cvs;
 mod m20261108_000001_create_interview_catalog;
 mod m20261108_000002_create_interviews;
 mod m20261108_000003_create_usage_ledger;
+mod m20261108_000004_seed_recruiter_roles;
 mod m20261110_000001_create_offer_catalogs;
 pub mod offer_seeds;
 pub mod seeds;
@@ -36,6 +37,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261108_000001_create_interview_catalog::Migration),
             Box::new(m20261108_000002_create_interviews::Migration),
             Box::new(m20261108_000003_create_usage_ledger::Migration),
+            Box::new(m20261108_000004_seed_recruiter_roles::Migration),
             Box::new(m20261110_000001_create_offer_catalogs::Migration),
         ]
     }

@@ -95,6 +95,10 @@ struct MeOut {
     status: String,
     email: String,
     plan: Option<PlanOut>,
+    /// Códigos de rol, para que el frontend elija menús. Salen de la consulta de `AuthUser`.
+    roles: Vec<String>,
+    /// Códigos de permiso que dan esos roles. La autorización real la hace el backend.
+    permissions: Vec<String>,
 }
 
 async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<MeOut>, ApiError> {
@@ -107,7 +111,7 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<MeOut>
              LEFT JOIN user_subscriptions s ON s.user_id = u.id AND s.status = 'active' \
              LEFT JOIN plans p ON p.id = s.plan_id \
              WHERE u.id = $1::uuid AND u.deleted_at IS NULL",
-            vec![user.id.into()],
+            vec![user.id.clone().into()],
         ))
         .await
         .map_err(db("leer_me"))?
@@ -130,6 +134,8 @@ async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<MeOut>
         plan: codigo
             .zip(nombre)
             .map(|(code, name)| PlanOut { code, name }),
+        roles: user.roles,
+        permissions: user.permissions,
     }))
 }
 

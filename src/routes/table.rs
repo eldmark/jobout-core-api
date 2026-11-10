@@ -4,6 +4,10 @@
 //!
 //! - [`Access::Public`] exige escribir **por qué** es pública. Una ruta pública sin justificación
 //!   no compila, y una justificación de relleno la rechaza un test.
+//! - [`Access::Permission`] es `Authenticated` **más** un permiso concedido por los roles de la
+//!   cuenta (`user_roles` → `role_permissions`). Sin él, 403 `sin_permiso`; el error no dice
+//!   qué permiso faltaba. Los permisos viajan en la misma consulta de la cuenta que ya hace la
+//!   autenticación, así que quitar un rol corta el acceso en la siguiente petición.
 //! - [`Access::Authenticated`] aplica la autenticación **al montar la ruta**, con un
 //!   *middleware* que valida el token y la cuenta. Aunque el handler se olvide de pedir
 //!   `AuthUser`, la ruta no queda abierta.
@@ -24,7 +28,10 @@ use axum::{
 };
 
 use super::{auth, catalogs, cvs, health, interview_catalog, interviews, me, profile};
-use crate::{auth_user::AuthUser, state::AppState};
+use crate::{
+    auth_user::{AuthError, AuthUser},
+    state::AppState,
+};
 
 /// Tope del cuerpo de cualquier petición. Todas las rutas actuales son JSON pequeños.
 pub const MAX_BODY_BYTES: usize = 8 * 1024;
@@ -36,6 +43,18 @@ pub enum Access {
     Public(&'static str),
     /// Exige un token válido de una cuenta vigente y no suspendida.
     Authenticated,
+    /// Autenticada **y** con este permiso (`user_roles` → `role_permissions`).
+    Permission(&'static str),
+}
+
+impl Access {
+    /// El permiso que exige la ruta, si declara uno.
+    pub fn required_permission(&self) -> Option<&'static str> {
+        match self {
+            Self::Permission(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 /// Una ruta de la aplicación.
@@ -73,6 +92,11 @@ pub fn build(specs: Vec<RouteSpec>, state: AppState) -> Router {
             Access::Authenticated => spec
                 .handler
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_auth)),
+            Access::Permission(permiso) => spec.handler.route_layer(
+                middleware::from_fn_with_state(state.clone(), move |s, p, n| {
+                    require_permission(permiso, s, p, n)
+                }),
+            ),
         };
         // El tope propio va en la ruta y gana al global, que se aplica por fuera.
         let handler = match spec.body_limit {
@@ -84,6 +108,24 @@ pub fn build(specs: Vec<RouteSpec>, state: AppState) -> Router {
     router
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
+}
+
+/// Como [`require_auth`], y además exige `permiso` entre los de la cuenta.
+async fn require_permission(
+    permiso: &'static str,
+    State(state): State<AppState>,
+    peticion: Request,
+    siguiente: Next,
+) -> Response {
+    let (mut partes, cuerpo) = peticion.into_parts();
+    match AuthUser::from_request_parts(&mut partes, &state).await {
+        Ok(usuario) if usuario.has_permission(permiso) => {
+            partes.extensions.insert(usuario);
+            siguiente.run(Request::from_parts(partes, cuerpo)).await
+        }
+        Ok(_) => AuthError::MissingPermission.into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 /// Valida el token y la cuenta antes de que la petición llegue al handler, y deja el usuario
