@@ -134,13 +134,76 @@ async fn m1_me_devuelve_la_cuenta() {
     db.cleanup().await;
 }
 
+/// Roles y permisos de /me (Fase 5, paso 2): un candidato recién registrado es `applicant` y no
+/// tiene permisos; la respuesta trae códigos, ordenados, sin ids ni nombres.
+#[tokio::test]
+async fn m3_me_trae_roles_y_permisos_de_un_candidato() {
+    let (db, app, token) = con_cuenta().await;
+    let (_, cuerpo) = get_me(&app, &token).await;
+    assert_eq!(cuerpo["roles"], json!(["applicant"]));
+    assert_eq!(cuerpo["permissions"], json!([]));
+    db.cleanup().await;
+}
+
+/// M4: la misma cuenta es candidato y reclutador; /me lista ambos roles y los permisos del
+/// reclutador, sin repetidos y ordenados. Quitar el rol se ve en la siguiente llamada.
+#[tokio::test]
+async fn m4_me_refleja_los_roles_vigentes() {
+    let (db, app, token) = con_cuenta().await;
+    let id = jwt().validate(&token).unwrap();
+    db.exec(&format!(
+        "INSERT INTO user_roles (user_id, role_id) \
+         SELECT '{id}'::uuid, id FROM roles WHERE code IN ('recruiter', 'company_admin')"
+    ))
+    .await
+    .unwrap();
+    let (_, cuerpo) = get_me(&app, &token).await;
+    assert_eq!(
+        cuerpo["roles"],
+        json!(["applicant", "company_admin", "recruiter"])
+    );
+    assert_eq!(
+        cuerpo["permissions"],
+        json!([
+            "application.read",
+            "application.review",
+            "company.invite",
+            "company.update",
+            "favorite.manage",
+            "offer.close",
+            "offer.create",
+            "offer.publish",
+            "offer.update"
+        ])
+    );
+    db.exec(&format!(
+        "DELETE FROM user_roles WHERE user_id = '{id}'::uuid \
+         AND role_id <> (SELECT id FROM roles WHERE code = 'applicant')"
+    ))
+    .await
+    .unwrap();
+    let (_, cuerpo) = get_me(&app, &token).await;
+    assert_eq!(cuerpo["roles"], json!(["applicant"]));
+    assert_eq!(cuerpo["permissions"], json!([]));
+    db.cleanup().await;
+}
+
 /// M2: /me solo puede traer un conjunto fijo de campos; nada interno.
 #[tokio::test]
 async fn m2_me_no_expone_campos_internos() {
     let (db, app, token) = con_cuenta().await;
     let (_, cuerpo) = get_me(&app, &token).await;
 
-    let permitidos = ["id", "first_name", "last_name", "status", "email", "plan"];
+    let permitidos = [
+        "id",
+        "first_name",
+        "last_name",
+        "status",
+        "email",
+        "plan",
+        "roles",
+        "permissions",
+    ];
     let campos: Vec<&String> = cuerpo.as_object().unwrap().keys().collect();
     for campo in &campos {
         assert!(

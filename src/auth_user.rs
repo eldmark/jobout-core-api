@@ -9,6 +9,11 @@
 //! - La cuenta ya no existe (o está marcada como borrada): 401.
 //! - Cuenta `suspended`: 403.
 //!
+//! La misma consulta trae los **roles** y los **permisos** de la cuenta (`user_roles` →
+//! `role_permissions`): una sola ida a la base por petición, y quitar un rol surte efecto en la
+//! siguiente. Nada se guarda en memoria entre peticiones. La ruta con `Access::Permission` y
+//! `GET /me` leen de aquí.
+//!
 //! Todas las respuestas 401 son idénticas a propósito: no dicen si el token estaba mal firmado,
 //! vencido o era de una cuenta borrada. Nada del token ni de la base se escribe en un log.
 
@@ -27,11 +32,23 @@ use crate::state::AppState;
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub id: String,
+    /// Códigos de los roles vigentes, ordenados.
+    pub roles: Vec<String>,
+    /// Códigos de los permisos que dan esos roles, sin repetir y ordenados.
+    pub permissions: Vec<String>,
+}
+
+impl AuthUser {
+    pub fn has_permission(&self, codigo: &str) -> bool {
+        self.permissions.iter().any(|p| p == codigo)
+    }
 }
 
 pub enum AuthError {
     Unauthorized,
     Suspended,
+    /// La cuenta está bien pero le falta el permiso de la ruta. No dice cuál.
+    MissingPermission,
     Internal,
 }
 
@@ -47,6 +64,11 @@ impl IntoResponse for AuthError {
                 StatusCode::FORBIDDEN,
                 "cuenta_no_disponible",
                 "Esta cuenta no puede usar el servicio.",
+            ),
+            Self::MissingPermission => (
+                StatusCode::FORBIDDEN,
+                "sin_permiso",
+                "No tienes permiso para hacer esto.",
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -87,7 +109,19 @@ impl FromRequestParts<AppState> for AuthUser {
             .db
             .query_one(Statement::from_sql_and_values(
                 DbBackend::Postgres,
-                "SELECT status::text FROM users WHERE id = $1::uuid AND deleted_at IS NULL",
+                "SELECT u.status::text, \
+                        COALESCE((SELECT array_agg(DISTINCT r.code::text ORDER BY r.code::text) \
+                                  FROM user_roles ur JOIN roles r ON r.id = ur.role_id \
+                                  WHERE ur.user_id = u.id AND r.deleted_at IS NULL), \
+                                 ARRAY[]::text[]), \
+                        COALESCE((SELECT array_agg(DISTINCT p.code::text ORDER BY p.code::text) \
+                                  FROM user_roles ur \
+                                  JOIN roles r ON r.id = ur.role_id AND r.deleted_at IS NULL \
+                                  JOIN role_permissions rp ON rp.role_id = r.id \
+                                  JOIN permissions p ON p.id = rp.permission_id \
+                                  WHERE ur.user_id = u.id AND p.deleted_at IS NULL), \
+                                 ARRAY[]::text[]) \
+                 FROM users u WHERE u.id = $1::uuid AND u.deleted_at IS NULL",
                 vec![id.clone().into()],
             ))
             .await
@@ -103,6 +137,18 @@ impl FromRequestParts<AppState> for AuthUser {
         if estado == "suspended" {
             return Err(AuthError::Suspended);
         }
-        Ok(Self { id })
+        let roles: Vec<String> = fila.try_get_by_index(1).map_err(|_| {
+            tracing::error!(donde = "auth_user_roles", "error interno");
+            AuthError::Internal
+        })?;
+        let permissions: Vec<String> = fila.try_get_by_index(2).map_err(|_| {
+            tracing::error!(donde = "auth_user_permisos", "error interno");
+            AuthError::Internal
+        })?;
+        Ok(Self {
+            id,
+            roles,
+            permissions,
+        })
     }
 }
