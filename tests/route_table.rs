@@ -84,39 +84,47 @@ fn metodo(nombre: &str) -> Method {
 /// tanto a que alguien lo revise en el PR.
 #[test]
 fn t7_las_rutas_declaradas_son_las_esperadas() {
-    let reales: BTreeSet<(String, bool)> = table::all()
+    // (ruta, pública, permiso exigido). Una ruta que exige un permiso y se declara solo
+    // `Authenticated` aparece aquí como `None` y esta lista no coincide: el test falla.
+    let reales: BTreeSet<(String, bool, Option<String>)> = table::all()
         .iter()
-        .map(|r| (r.path.to_string(), matches!(r.access, Access::Public(_))))
+        .map(|r| {
+            (
+                r.path.to_string(),
+                matches!(r.access, Access::Public(_)),
+                r.access.required_permission().map(str::to_string),
+            )
+        })
         .collect();
-    let esperadas: BTreeSet<(String, bool)> = [
-        ("/health", true),
-        ("/api/v1/auth/register", true),
-        ("/api/v1/auth/login", true),
-        ("/api/v1/auth/refresh", true),
-        ("/api/v1/auth/logout", true),
-        ("/api/v1/me", false),
-        ("/api/v1/catalogs/{nombre}", false),
-        ("/api/v1/cvs", false),
-        ("/api/v1/cvs/{id}", false),
-        ("/api/v1/cvs/{id}/file", false),
-        ("/api/v1/cvs/{id}/primary", false),
-        ("/api/v1/profile", false),
-        ("/api/v1/cvs/{id}/extraction", false),
-        ("/api/v1/cvs/{id}/extraction/confirm", false),
-        ("/api/v1/interviews", false),
-        ("/api/v1/interviews/{id}", false),
-        ("/api/v1/interviews/{id}/pause", false),
-        ("/api/v1/interviews/{id}/resume", false),
-        ("/api/v1/interviews/{id}/abandon", false),
-        ("/api/v1/interviews/{id}/turns", false),
-        ("/api/v1/interviews/{id}/finish", false),
-        ("/api/v1/interviews/{id}/score", false),
-        ("/api/v1/recruiters", false),
-        ("/api/v1/levels", false),
-        ("/api/v1/progress", false),
+    let esperadas: BTreeSet<(String, bool, Option<String>)> = [
+        ("/health", true, None),
+        ("/api/v1/auth/register", true, None),
+        ("/api/v1/auth/login", true, None),
+        ("/api/v1/auth/refresh", true, None),
+        ("/api/v1/auth/logout", true, None),
+        ("/api/v1/me", false, None),
+        ("/api/v1/catalogs/{nombre}", false, None),
+        ("/api/v1/cvs", false, None),
+        ("/api/v1/cvs/{id}", false, None),
+        ("/api/v1/cvs/{id}/file", false, None),
+        ("/api/v1/cvs/{id}/primary", false, None),
+        ("/api/v1/profile", false, None),
+        ("/api/v1/cvs/{id}/extraction", false, None),
+        ("/api/v1/cvs/{id}/extraction/confirm", false, None),
+        ("/api/v1/interviews", false, None),
+        ("/api/v1/interviews/{id}", false, None),
+        ("/api/v1/interviews/{id}/pause", false, None),
+        ("/api/v1/interviews/{id}/resume", false, None),
+        ("/api/v1/interviews/{id}/abandon", false, None),
+        ("/api/v1/interviews/{id}/turns", false, None),
+        ("/api/v1/interviews/{id}/finish", false, None),
+        ("/api/v1/interviews/{id}/score", false, None),
+        ("/api/v1/recruiters", false, None),
+        ("/api/v1/levels", false, None),
+        ("/api/v1/progress", false, None),
     ]
     .into_iter()
-    .map(|(p, publica)| (p.to_string(), publica))
+    .map(|(p, publica, permiso)| (p.to_string(), publica, permiso.map(str::to_string)))
     .collect();
     assert_eq!(reales, esperadas);
 }
@@ -166,7 +174,7 @@ async fn t3_las_rutas_protegidas_exigen_token() {
     let mut probadas = 0;
     for r in table::all()
         .iter()
-        .filter(|r| matches!(r.access, Access::Authenticated))
+        .filter(|r| !matches!(r.access, Access::Public(_)))
     {
         for m in r.methods {
             let m = metodo(m);
@@ -198,7 +206,7 @@ async fn t3b_un_jwt_de_otra_clave_no_pasa() {
     let token = ajeno.issue("00000000-0000-7000-8000-000000000000").unwrap();
     for r in table::all()
         .iter()
-        .filter(|r| matches!(r.access, Access::Authenticated))
+        .filter(|r| !matches!(r.access, Access::Public(_)))
     {
         for m in r.methods {
             assert_eq!(
@@ -244,6 +252,51 @@ async fn t6_una_ruta_inexistente_es_404() {
         pedir(&app, &Method::GET, "/api/v1/no-existe", Some("Bearer x")).await,
         StatusCode::NOT_FOUND
     );
+}
+
+/// RO3: el permiso exigido se lee de la declaración, y un permiso vacío o con mayúsculas o
+/// espacios (es decir, que no podría estar sembrado) se rechaza.
+#[test]
+fn ro3_los_permisos_declarados_tienen_formato_de_codigo() {
+    assert_eq!(Access::Authenticated.required_permission(), None);
+    assert_eq!(Access::Public("x").required_permission(), None);
+    assert_eq!(
+        Access::Permission("offer.create").required_permission(),
+        Some("offer.create")
+    );
+    for r in table::all() {
+        if let Some(p) = r.access.required_permission() {
+            assert!(
+                !p.is_empty()
+                    && p.chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '.' || c == '_'),
+                "{} exige el permiso mal formado {p:?}",
+                r.path
+            );
+        }
+    }
+}
+
+/// RO3: una ruta de reclutador declarada solo `Authenticated` se detecta. La lista de rutas
+/// esperadas (T7) lleva el permiso; aquí se comprueba que compararla con una declaración sin
+/// permiso **no** da igual.
+#[test]
+fn ro3_una_ruta_con_permiso_declarada_autenticada_no_coincide() {
+    let esperada = ("/api/v1/offers", false, Some("offer.create"));
+    let declarada = Access::Authenticated;
+    let real = (
+        "/api/v1/offers",
+        matches!(declarada, Access::Public(_)),
+        declarada.required_permission(),
+    );
+    assert_ne!(esperada, real);
+    let bien = Access::Permission("offer.create");
+    let real = (
+        "/api/v1/offers",
+        matches!(bien, Access::Public(_)),
+        bien.required_permission(),
+    );
+    assert_eq!(esperada, real);
 }
 
 // ------------------------------------------- protección por construcción
