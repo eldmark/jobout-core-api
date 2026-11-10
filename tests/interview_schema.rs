@@ -87,7 +87,7 @@ async fn e1_las_tablas_de_sesiones_son_reversibles() {
         assert!(existe(&db, t).await, "falta la tabla {t}");
     }
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(5)).await.expect("down");
+    Migrator::down(&db.conn, Some(6)).await.expect("down");
     for t in TABLAS {
         assert!(!existe(&db, t).await, "down debe quitar {t}");
     }
@@ -290,7 +290,7 @@ async fn e8_borrar_el_candidato_borra_todo_en_cascada() {
     db.cleanup().await;
 }
 
-/// E9: la versión de rúbrica de la sesión es obligatoria y debe existir; job_offer_id es libre.
+/// E9: la versión de rúbrica de la sesión es obligatoria y debe existir; job_offer_id es opcional pero con FK.
 #[tokio::test]
 async fn e9_la_sesion_exige_una_version_de_rubrica_existente() {
     let db = TestDb::migrated().await;
@@ -308,14 +308,17 @@ async fn e9_la_sesion_exige_una_version_de_rubrica_existente() {
     assert!(err.contains("null"), "{err}");
     let err = error_de(db.exec(&insertar(&format!("'{}'", Uuid::now_v7()))).await);
     assert!(err.contains("foreign key"), "{err}");
-    // Sin FK a ofertas todavía: el job_offer_id es un uuid libre y opcional.
+    // Con las ofertas (Fase 5a, paso 4) `job_offer_id` tiene FK: sigue siendo opcional, pero un
+    // id que no existe se rechaza (la FK con `ON DELETE SET NULL` se prueba en offers_schema).
     let s = nueva_sesion(&db, a, "created").await.unwrap();
-    db.exec(&format!(
-        "UPDATE interview_sessions SET job_offer_id = '{}' WHERE id = '{s}'",
-        Uuid::now_v7()
-    ))
-    .await
-    .unwrap();
+    let err = error_de(
+        db.exec(&format!(
+            "UPDATE interview_sessions SET job_offer_id = '{}' WHERE id = '{s}'",
+            Uuid::now_v7()
+        ))
+        .await,
+    );
+    assert!(err.contains("foreign key"), "{err}");
     db.cleanup().await;
 }
 

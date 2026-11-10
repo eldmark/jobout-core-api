@@ -12,6 +12,11 @@
 //!   *middleware* que valida el token y la cuenta. Aunque el handler se olvide de pedir
 //!   `AuthUser`, la ruta no queda abierta.
 //!
+//! Una misma ruta puede declararse varias veces **con métodos distintos** cuando cada método
+//! exige un acceso distinto (p. ej. `POST /company/offers` pide `offer.create` y
+//! `GET /company/offers` pide `offer.update`): axum las une. Declarar el mismo método dos veces
+//! sigue siendo un error (lo vigila `tests/route_table.rs`).
+//!
 //! Los módulos de rutas no construyen `Router`s: devuelven `Vec<RouteSpec>`. Para añadir una ruta
 //! se declara en el módulo que corresponda; para que sea visible en la revisión, además hay que
 //! actualizar la lista esperada de `tests/route_table.rs`.
@@ -29,7 +34,7 @@ use axum::{
 
 use super::{
     admin_companies, auth, catalogs, companies, cvs, health, interview_catalog, interviews, me,
-    profile,
+    offers, profile,
 };
 use crate::{
     auth_user::{AuthError, AuthUser},
@@ -84,6 +89,7 @@ pub fn all() -> Vec<RouteSpec> {
     rutas.extend(interview_catalog::routes());
     rutas.extend(companies::routes());
     rutas.extend(admin_companies::routes());
+    rutas.extend(offers::routes());
     rutas
 }
 
