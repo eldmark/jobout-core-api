@@ -60,6 +60,7 @@ async fn q7_con_el_interruptor_apagado_no_bloquea_pero_registra() {
         ),
         jwt: Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap()),
         blobs: jobout_core_api::blob::memory_store(),
+        engine: jobout_core_api::interview::default_engine(),
     });
     let (e, c) = enviar(
         &app,
