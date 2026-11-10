@@ -870,20 +870,29 @@ async fn dos_pausas_simultaneas_dejan_una() {
 
 // ================================================================== OF7
 
+/// `n` aplicaciones reales (de personas distintas, por SQL) a la oferta.
+async fn con_aplicaciones(m: &Mundo, oferta: &str, n: usize) {
+    for i in 0..n {
+        let (_, ap) = common::nuevo_applicant(&m.db, &format!("aplicante-{oferta}-{i}")).await;
+        m.db.exec(&format!(
+            "INSERT INTO job_applications (id, applicant_id, job_offer_id, status, shared_fields) \
+             VALUES (gen_random_uuid(), '{ap}', '{oferta}', 'applied', '[\"display_name\",\"skills\",\"experience\"]')"
+        ))
+        .await
+        .unwrap();
+    }
+}
+
 /// OF7: desde la primera aplicación solo se editan `description`, `schedule`, `vacancies` y
 /// `hiring_date`; lo demás → 409 `oferta_con_aplicaciones`. Las aplicaciones todavía no existen
-/// (paso 6): se simulan con el contador transitorio `applications_count`.
+/// (paso 6): se insertan aplicaciones reales por SQL (`con_aplicaciones`).
 #[tokio::test]
 async fn of7_con_aplicaciones_solo_se_editan_cuatro_campos() {
     let m = mundo().await;
     let hiring = fecha(&m.db, 60).await;
     let id = crear_ok(&m, &m.a, m.cat.total(&hiring)).await;
     accion(&m, &m.a, &id, "publish").await;
-    m.db.exec(&format!(
-        "UPDATE job_offers SET applications_count = 3 WHERE id = '{id}'"
-    ))
-    .await
-    .unwrap();
+    con_aplicaciones(&m, &id, 3).await;
     assert_eq!(leer(&m, &m.a, &id).await["applications_count"], 3);
 
     // Editables.
@@ -1023,19 +1032,11 @@ async fn borrar_solo_un_borrador_sin_aplicaciones() {
     let m = mundo().await;
     let hiring = fecha(&m.db, 60).await;
     let id = crear_ok(&m, &m.a, m.cat.total(&hiring)).await;
-    m.db.exec(&format!(
-        "UPDATE job_offers SET applications_count = 1 WHERE id = '{id}'"
-    ))
-    .await
-    .unwrap();
+    con_aplicaciones(&m, &id, 1).await;
     let ruta = format!("{OFERTAS}/{id}");
     let (e, v) = enviar(&m.app, "DELETE", &ruta, Some(&m.a), None).await;
     assert_eq!((e, codigo(&v)), (StatusCode::CONFLICT, "estado_invalido"));
-    m.db.exec(&format!(
-        "UPDATE job_offers SET applications_count = 0 WHERE id = '{id}'"
-    ))
-    .await
-    .unwrap();
+    m.db.exec("DELETE FROM job_applications").await.unwrap();
     let (e, _) = enviar(&m.app, "DELETE", &ruta, Some(&m.a), None).await;
     assert_eq!(e, StatusCode::NO_CONTENT);
     assert_eq!(m.db.count("SELECT count(*) FROM job_offers").await, 0);
