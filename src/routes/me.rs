@@ -36,6 +36,8 @@ pub fn routes() -> Vec<RouteSpec> {
 
 enum ApiError {
     BadPassword,
+    /// 409: es el único `company_admin` de una empresa que existe.
+    LastAdmin,
     TooManyAttempts,
     Gone,
     Internal,
@@ -48,6 +50,11 @@ impl IntoResponse for ApiError {
                 StatusCode::FORBIDDEN,
                 "contrasena_incorrecta",
                 "La contraseña no es correcta.",
+            ),
+            Self::LastAdmin => (
+                StatusCode::CONFLICT,
+                "ultimo_administrador",
+                "Eres el único administrador de tu empresa. Nombra a otro antes de borrar la cuenta.",
             ),
             Self::TooManyAttempts => (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -188,6 +195,29 @@ async fn delete_me(
 
     // Todo o nada: la constancia y el borrado van en la misma transacción.
     let txn = state.db.begin().await.map_err(db("begin"))?;
+
+    // El único administrador de una empresa no se va: quedaría sin nadie que la gestione. Se
+    // bloquea la empresa para que dos administradores que se borran a la vez no la dejen vacía.
+    if let Some(f) = txn
+        .query_one(stmt(
+            "SELECT company_id::text FROM company_recruiters \
+             WHERE user_id = $1::uuid AND role = 'company_admin' AND deleted_at IS NULL",
+            vec![user.id.clone().into()],
+        ))
+        .await
+        .map_err(db("leer_empresa"))?
+    {
+        let empresa: String = f.try_get_by_index(0).map_err(db("leer_empresa_id"))?;
+        super::companies::bloquear_empresa(&txn, &empresa)
+            .await
+            .map_err(|_| ApiError::Internal)?;
+        let otros = super::companies::otros_administradores(&txn, &empresa, &user.id)
+            .await
+            .map_err(|_| ApiError::Internal)?;
+        if otros == 0 {
+            return Err(ApiError::LastAdmin);
+        }
+    }
 
     // Las claves de los archivos del CV se leen ANTES de borrar: después las FK en cascada ya
     // se llevaron `cvs`. Van a la bandeja (cifradas de nuevo) en esta misma transacción, así que

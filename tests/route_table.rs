@@ -122,6 +122,38 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/recruiters", false, None),
         ("/api/v1/levels", false, None),
         ("/api/v1/progress", false, None),
+        ("/api/v1/companies", false, None),
+        ("/api/v1/company", false, None),
+        ("/api/v1/company", false, Some("company.update")),
+        ("/api/v1/company/recruiters", false, Some("company.invite")),
+        (
+            "/api/v1/company/recruiters/{id}",
+            false,
+            Some("company.invite"),
+        ),
+        ("/api/v1/company/invitations", false, Some("company.invite")),
+        (
+            "/api/v1/company/invitations/{id}",
+            false,
+            Some("company.invite"),
+        ),
+        ("/api/v1/invitations/accept", false, None),
+        ("/api/v1/admin/companies", false, Some("company.verify")),
+        (
+            "/api/v1/admin/companies/{id}/verify",
+            false,
+            Some("company.verify"),
+        ),
+        (
+            "/api/v1/admin/companies/{id}/unverify",
+            false,
+            Some("company.verify"),
+        ),
+        (
+            "/api/v1/admin/companies/{id}/membership",
+            false,
+            Some("company.verify"),
+        ),
     ]
     .into_iter()
     .map(|(p, publica, permiso)| (p.to_string(), publica, permiso.map(str::to_string)))
@@ -222,18 +254,26 @@ async fn t3b_un_jwt_de_otra_clave_no_pasa() {
 #[tokio::test]
 async fn t4_los_metodos_declarados_son_los_reales() {
     let app = app_with_state(estado_sin_base());
+    // Una misma ruta puede declararse varias veces con métodos y accesos distintos
+    // (`GET /company` es de cualquiera con empresa; `PUT`, de quien tiene `company.update`).
+    let mut por_ruta: std::collections::BTreeMap<&str, BTreeSet<&str>> = Default::default();
     for r in table::all() {
+        por_ruta
+            .entry(r.path)
+            .or_default()
+            .extend(r.methods.iter().copied());
+    }
+    for (ruta, declarados) in por_ruta {
         for m in METODOS {
-            let declarado = r.methods.contains(&m.as_str());
-            let estado = pedir(&app, &m, r.path, None).await;
+            let declarado = declarados.contains(m.as_str());
+            let estado = pedir(&app, &m, ruta, None).await;
             if declarado {
-                assert_ne!(estado, StatusCode::METHOD_NOT_ALLOWED, "{m} {}", r.path);
+                assert_ne!(estado, StatusCode::METHOD_NOT_ALLOWED, "{m} {ruta}");
             } else {
                 assert_eq!(
                     estado,
                     StatusCode::METHOD_NOT_ALLOWED,
-                    "{m} {} responde pero no está declarado",
-                    r.path
+                    "{m} {ruta} responde pero no está declarado"
                 );
             }
         }

@@ -178,7 +178,7 @@ fn parse<T: serde::de::DeserializeOwned>(cuerpo: &Bytes) -> Result<T, ApiError> 
 
 /// UUID en texto canónico (8-4-4-4-12 hexadecimal) → minúsculas. Es lo que evita que un id
 /// malformado llegue al SQL.
-fn uuid_canonico(s: &str) -> Option<String> {
+pub(crate) fn uuid_canonico(s: &str) -> Option<String> {
     let partes: Vec<&str> = s.split('-').collect();
     let largos = [8, 4, 4, 4, 12];
     let ok = partes.len() == 5
@@ -190,7 +190,7 @@ fn uuid_canonico(s: &str) -> Option<String> {
 }
 
 /// `AAAA-MM-DD` real (con años bisiestos). Devuelve la tupla para poder comparar fechas.
-fn fecha(s: &str) -> Option<(i32, u32, u32)> {
+pub(crate) fn fecha(s: &str) -> Option<(i32, u32, u32)> {
     let b = s.as_bytes();
     if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
         return None;

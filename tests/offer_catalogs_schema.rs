@@ -132,7 +132,7 @@ async fn ct1_los_catalogos_tienen_la_forma_estandar() {
 async fn ct1_down_y_up_dejan_el_mismo_esquema() {
     let db = TestDb::migrated().await;
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(1)).await.expect("down");
+    Migrator::down(&db.conn, Some(2)).await.expect("down");
     for t in CATALOGOS {
         assert_eq!(existe(&db, t).await, 0, "down debe quitar {t}");
     }

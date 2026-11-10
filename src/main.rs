@@ -45,9 +45,13 @@ async fn main() -> Result<()> {
     let (parar, parada) = tokio::sync::watch::channel(false);
     let limpieza = tokio::spawn(cleanup_loop(state.clone(), parada));
 
-    axum::serve(listener, app_with_state(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    // La dirección del socket llega a las rutas (la auditoría la hashea).
+    axum::serve(
+        listener,
+        app_with_state(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await?;
 
     let _ = parar.send(true);
     let _ = limpieza.await;
