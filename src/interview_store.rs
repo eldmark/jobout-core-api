@@ -28,7 +28,8 @@ use crate::{
     interview::{
         closing_message,
         store_crypto::{decrypt_turn_text, encrypt_turn_text},
-        InterviewEngine, Level, Message, RecruiterCode, RecruiterConfig, Speaker, TurnKind,
+        InterviewEngine, Level, Message, RecruiterCode, RecruiterConfig, RubricCriterion, Speaker,
+        TurnKind,
     },
 };
 
@@ -49,6 +50,8 @@ pub enum StoreError {
     NoRubric,
     /// A row did not have the shape the code expects.
     Corrupt,
+    /// The engine could not evaluate the session (or returned something out of contract).
+    Engine,
 }
 
 impl From<DbErr> for StoreError {
@@ -324,22 +327,284 @@ fn is_lock_busy(e: &DbErr) -> bool {
     matches!(inner, sea_orm::sqlx::Error::Database(d) if d.code().as_deref() == Some("55P03"))
 }
 
-/// Hook for step 8 (JB-48): runs **inside the transaction** that closes a session, after the
-/// closing turn is written and the status is already `completed`, and before the commit. Whatever
-/// it does (the score, the level progress) is therefore all-or-nothing with the closing itself.
+/// The person's side of a transcript as the engine wants it.
+fn to_messages(turnos: &[Turn]) -> Vec<Message> {
+    turnos
+        .iter()
+        .map(|t| Message {
+            speaker: if t.speaker == "recruiter" {
+                Speaker::Recruiter
+            } else {
+                Speaker::Candidate
+            },
+            text: t.text.clone(),
+        })
+        .collect()
+}
+
+/// One criterion of the score breakdown, as the contract shows it.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BreakdownItem {
+    pub criterion: String,
+    pub label: String,
+    pub score: i32,
+    pub max_points: i32,
+    pub why: String,
+}
+
+/// What is persisted in `interview_scores.breakdown`: the per-criterion results and the
+/// improvements that go with them (the table has no other column for them).
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct StoredBreakdown {
+    criteria: Vec<BreakdownItem>,
+    improvements: Vec<StoredImprovement>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct StoredImprovement {
+    criterion: String,
+    text: String,
+    potential_points: i32,
+}
+
+/// `Score` of the contract (`finish` and `GET .../score`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Score {
+    pub score: i32,
+    pub clarity: i32,
+    /// Always `null` in text mode.
+    pub confidence: Option<i32>,
+    pub breakdown: Vec<BreakdownItem>,
+    pub improvements: Vec<String>,
+    pub rubric_version: i32,
+    pub computed_at: String,
+}
+
+/// The criteria of a pinned rubric version, from its `jsonb`.
+fn parse_criteria(json: &str) -> Result<Vec<RubricCriterion>, StoreError> {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        code: String,
+        name: String,
+        max_points: u32,
+        #[serde(default)]
+        description: String,
+    }
+    let raw: Vec<Raw> = serde_json::from_str(json).map_err(|_| StoreError::Corrupt)?;
+    Ok(raw
+        .into_iter()
+        .map(|c| RubricCriterion {
+            code: c.code,
+            name: c.name,
+            max_points: c.max_points,
+            description: c.description,
+        })
+        .collect())
+}
+
+/// Runs **inside the transaction** that closes a session, after the closing is written and the
+/// status is already `completed`, and before the commit: the score and the level progress are
+/// all-or-nothing with the closing itself, so a completed session always has its score.
 ///
-/// TODO(step 8): compute and persist the score (`interview_scores`) with `engine.evaluate` over the
-/// session's rubric version, and update `applicant_level_progress` (best score, sessions completed,
-/// unlock of the next level). Until then a completed session has no score row.
-#[allow(clippy::unused_async)]
+/// - Evaluates the transcript with the rubric version **pinned by the session** (not the current
+///   one) through the engine, and stores the result in `interview_scores` (one row per session: the
+///   unique index plus `ON CONFLICT DO NOTHING` make a repeated call a no-op, and then the progress
+///   is not touched either). `confidence` stays `NULL`.
+/// - Upserts the progress of the session's level: `best_score` only goes up and
+///   `sessions_completed` grows by one (this function runs once per completed session).
+/// - Unlocks exactly the next level (the one whose `previous_level_id` is this level) when it is
+///   `available` and the score reaches its `min_score_to_unlock`. Never two levels at once.
 pub async fn on_session_completed<C: ConnectionTrait>(
-    _db: &C,
-    _keys: &PiiKeys,
-    _engine: &(dyn InterviewEngine + Send + Sync),
-    _applicant: Uuid,
-    _session_id: Uuid,
+    db: &C,
+    keys: &PiiKeys,
+    engine: &(dyn InterviewEngine + Send + Sync),
+    applicant: Uuid,
+    session_id: Uuid,
 ) -> Result<(), StoreError> {
+    let c = |_| StoreError::Corrupt;
+    let fila = db
+        .query_one(stmt(
+            "SELECT r.code, l.code, l.id, v.id, v.criteria::text \
+             FROM interview_sessions s \
+             JOIN ai_recruiters r ON r.id = s.ai_recruiter_id \
+             JOIN interview_levels l ON l.id = s.interview_level_id \
+             JOIN rubric_versions v ON v.id = s.rubric_version_id \
+             WHERE s.id = $1 AND s.applicant_id = $2",
+            vec![session_id.into(), applicant.into()],
+        ))
+        .await?
+        .ok_or(StoreError::Corrupt)?;
+    let recruiter_code: String = fila.try_get_by_index(0).map_err(c)?;
+    let level_code: String = fila.try_get_by_index(1).map_err(c)?;
+    let level_id: Uuid = fila.try_get_by_index(2).map_err(c)?;
+    let version_id: Uuid = fila.try_get_by_index(3).map_err(c)?;
+    let criteria = parse_criteria(&fila.try_get_by_index::<String>(4).map_err(c)?)?;
+
+    let (Some(recruiter), Some(level)) = (
+        RecruiterCode::from_code(&recruiter_code),
+        Level::from_code(&level_code),
+    ) else {
+        return Err(StoreError::Engine);
+    };
+    let turnos = turns_of(db, keys, session_id).await?;
+    let evaluacion = engine
+        .evaluate(
+            &RecruiterConfig { recruiter, level },
+            &to_messages(&turnos),
+            &criteria,
+        )
+        .map_err(|_| StoreError::Engine)?;
+
+    let suma: u32 = evaluacion.breakdown.iter().map(|b| b.points).sum();
+    if evaluacion.score > 100 || evaluacion.clarity > 100 || suma != evaluacion.score {
+        return Err(StoreError::Engine);
+    }
+    let almacenado = StoredBreakdown {
+        criteria: evaluacion
+            .breakdown
+            .iter()
+            .map(|b| BreakdownItem {
+                criterion: b.code.clone(),
+                label: b.name.clone(),
+                score: b.points as i32,
+                max_points: b.max_points as i32,
+                why: b.why.clone(),
+            })
+            .collect(),
+        improvements: evaluacion
+            .improvements
+            .iter()
+            .map(|i| StoredImprovement {
+                criterion: i.criterion_code.clone(),
+                text: i.text.clone(),
+                potential_points: i.potential_points as i32,
+            })
+            .collect(),
+    };
+    let breakdown = serde_json::to_string(&almacenado).map_err(|_| StoreError::Corrupt)?;
+    let score = evaluacion.score as i16;
+
+    let insertadas = db
+        .execute(stmt(
+            "INSERT INTO interview_scores \
+                (id, interview_session_id, score, confidence, clarity, breakdown, rubric_version_id) \
+             VALUES ($1, $2, $3, NULL, $4, $5::jsonb, $6) \
+             ON CONFLICT (interview_session_id) DO NOTHING",
+            vec![
+                migration::new_id().into(),
+                session_id.into(),
+                score.into(),
+                (evaluacion.clarity as i16).into(),
+                breakdown.into(),
+                version_id.into(),
+            ],
+        ))
+        .await?
+        .rows_affected();
+    if insertadas == 0 {
+        // Already scored (and counted) by an earlier call.
+        return Ok(());
+    }
+
+    db.execute(stmt(
+        "INSERT INTO applicant_level_progress \
+            (id, applicant_id, interview_level_id, unlocked_at, best_score, sessions_completed) \
+         VALUES ($1, $2, $3, now(), $4, 1) \
+         ON CONFLICT (applicant_id, interview_level_id) DO UPDATE SET \
+            best_score = GREATEST(COALESCE(applicant_level_progress.best_score, 0), \
+                                  EXCLUDED.best_score), \
+            sessions_completed = applicant_level_progress.sessions_completed + 1",
+        vec![
+            migration::new_id().into(),
+            applicant.into(),
+            level_id.into(),
+            score.into(),
+        ],
+    ))
+    .await?;
+    db.execute(stmt(
+        "INSERT INTO applicant_level_progress \
+            (id, applicant_id, interview_level_id, unlocked_at, best_score, sessions_completed) \
+         SELECT $1, $2, n.id, now(), NULL, 0 FROM interview_levels n \
+         WHERE n.previous_level_id = $3 AND n.available AND n.active \
+           AND n.min_score_to_unlock IS NOT NULL AND $4 >= n.min_score_to_unlock \
+         ON CONFLICT (applicant_id, interview_level_id) DO NOTHING",
+        vec![
+            migration::new_id().into(),
+            applicant.into(),
+            level_id.into(),
+            score.into(),
+        ],
+    ))
+    .await?;
     Ok(())
+}
+
+/// The stored score of a session, or `None` if it has none.
+async fn stored_score<C: ConnectionTrait>(
+    db: &C,
+    session_id: Uuid,
+) -> Result<Option<Score>, StoreError> {
+    let sql = format!(
+        "SELECT sc.score::int4, sc.clarity::int4, sc.confidence::int4, sc.breakdown::text, \
+                v.version, {} \
+         FROM interview_scores sc JOIN rubric_versions v ON v.id = sc.rubric_version_id \
+         WHERE sc.interview_session_id = $1",
+        iso_sql("sc.computed_at")
+    );
+    let Some(f) = db.query_one(stmt(&sql, vec![session_id.into()])).await? else {
+        return Ok(None);
+    };
+    let c = |_| StoreError::Corrupt;
+    let guardado: StoredBreakdown =
+        serde_json::from_str(&f.try_get_by_index::<String>(3).map_err(c)?)
+            .map_err(|_| StoreError::Corrupt)?;
+    Ok(Some(Score {
+        score: f.try_get_by_index(0).map_err(c)?,
+        clarity: f.try_get_by_index(1).map_err(c)?,
+        confidence: f.try_get_by_index(2).map_err(c)?,
+        breakdown: guardado.criteria,
+        improvements: guardado.improvements.into_iter().map(|i| i.text).collect(),
+        rubric_version: f.try_get_by_index(4).map_err(c)?,
+        computed_at: f.try_get_by_index(5).map_err(c)?,
+    }))
+}
+
+/// What [`score_of`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScoreOutcome {
+    Found(Score),
+    /// Does not exist or is somebody else's.
+    NotFound,
+    /// Exists, but is not `completed`.
+    InvalidState,
+}
+
+/// The score of a completed session of the person.
+pub async fn score_of<C: ConnectionTrait>(
+    db: &C,
+    applicant: Uuid,
+    id: Uuid,
+) -> Result<ScoreOutcome, StoreError> {
+    let Some(fila) = db
+        .query_one(stmt(
+            "SELECT status::text FROM interview_sessions \
+             WHERE id = $1 AND applicant_id = $2 AND status <> 'created'",
+            vec![id.into(), applicant.into()],
+        ))
+        .await?
+    else {
+        return Ok(ScoreOutcome::NotFound);
+    };
+    let status: String = fila.try_get_by_index(0).map_err(|_| StoreError::Corrupt)?;
+    if status != "completed" {
+        return Ok(ScoreOutcome::InvalidState);
+    }
+    // A completed session always has its score: closing and scoring are one transaction.
+    stored_score(db, id)
+        .await?
+        .map(ScoreOutcome::Found)
+        .ok_or(StoreError::Corrupt)
 }
 
 /// Save the person's answer and the recruiter's reply, or neither.
@@ -427,17 +692,7 @@ pub async fn answer_turn(
         return Ok(AnswerOutcome::EngineFailed);
     };
     let config = RecruiterConfig { recruiter, level };
-    let mut historial: Vec<Message> = turnos
-        .iter()
-        .map(|t| Message {
-            speaker: if t.speaker == "recruiter" {
-                Speaker::Recruiter
-            } else {
-                Speaker::Candidate
-            },
-            text: t.text.clone(),
-        })
-        .collect();
+    let mut historial = to_messages(&turnos);
     historial.push(Message::candidate(text));
     let Ok(siguiente) = engine.next_turn(&config, &historial) else {
         let _ = txn.rollback().await;
@@ -485,7 +740,14 @@ pub async fn answer_turn(
     };
     txn.execute(stmt(sql, vec![id.into()])).await?;
     if cierra {
-        on_session_completed(&txn, keys, engine, applicant, id).await?;
+        match on_session_completed(&txn, keys, engine, applicant, id).await {
+            Ok(()) => {}
+            Err(StoreError::Engine) => {
+                let _ = txn.rollback().await;
+                return Ok(AnswerOutcome::EngineFailed);
+            }
+            Err(e) => return Err(e),
+        }
     }
     txn.commit().await?;
     Ok(AnswerOutcome::Replied {
@@ -497,6 +759,109 @@ pub async fn answer_turn(
         },
         done: cierra,
     })
+}
+
+// ------------------------------------------------------------------ finishing
+
+/// Fewest answers of the person a session needs to be finished by hand.
+pub const MIN_ANSWERS_TO_FINISH: i64 = 2;
+
+/// What [`finish_session`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinishOutcome {
+    /// Completed (now, or already was): the score.
+    Finished(Score),
+    NotFound,
+    /// `paused` or `abandoned`.
+    InvalidState,
+    /// Another request holds the session row (a turn or another finish in flight).
+    Busy,
+    /// Fewer than [`MIN_ANSWERS_TO_FINISH`] answers: the session stays open.
+    TooShort,
+    /// The engine failed: nothing was changed.
+    EngineFailed,
+}
+
+/// Finish a session: close it and score it, or hand back the score it already has.
+///
+/// Same lock as [`answer_turn`] (`FOR UPDATE NOWAIT` on the session row), so a finish racing a turn
+/// or another finish gets [`FinishOutcome::Busy`] instead of waiting. Under the lock the status is
+/// read once: `completed` returns the stored score without evaluating again (idempotent),
+/// `in_progress` is closed through [`on_session_completed`], anything else is an invalid state.
+pub async fn finish_session(
+    db: &DatabaseConnection,
+    keys: &PiiKeys,
+    engine: &(dyn InterviewEngine + Send + Sync),
+    applicant: Uuid,
+    id: Uuid,
+) -> Result<FinishOutcome, StoreError> {
+    let txn = db.begin().await?;
+    let fila = match txn
+        .query_one(stmt(
+            "SELECT s.status::text FROM interview_sessions s \
+             WHERE s.id = $1 AND s.applicant_id = $2 AND s.status <> 'created' \
+             FOR UPDATE OF s NOWAIT",
+            vec![id.into(), applicant.into()],
+        ))
+        .await
+    {
+        Ok(f) => f,
+        Err(e) if is_lock_busy(&e) => {
+            let _ = txn.rollback().await;
+            return Ok(FinishOutcome::Busy);
+        }
+        Err(_) => return Err(StoreError::Db),
+    };
+    let Some(fila) = fila else {
+        let _ = txn.rollback().await;
+        return Ok(FinishOutcome::NotFound);
+    };
+    let status: String = fila.try_get_by_index(0).map_err(|_| StoreError::Corrupt)?;
+    match status.as_str() {
+        "completed" => {
+            let score = stored_score(&txn, id).await?.ok_or(StoreError::Corrupt)?;
+            let _ = txn.rollback().await;
+            return Ok(FinishOutcome::Finished(score));
+        }
+        "in_progress" => {}
+        _ => {
+            let _ = txn.rollback().await;
+            return Ok(FinishOutcome::InvalidState);
+        }
+    }
+
+    let respuestas: i64 = txn
+        .query_one(stmt(
+            "SELECT count(*)::bigint FROM interview_turns \
+             WHERE interview_session_id = $1 AND speaker = 'applicant'",
+            vec![id.into()],
+        ))
+        .await?
+        .ok_or(StoreError::Corrupt)?
+        .try_get_by_index(0)
+        .map_err(|_| StoreError::Corrupt)?;
+    if respuestas < MIN_ANSWERS_TO_FINISH {
+        let _ = txn.rollback().await;
+        return Ok(FinishOutcome::TooShort);
+    }
+
+    txn.execute(stmt(
+        "UPDATE interview_sessions SET status = 'completed', completed_at = now(), \
+                last_activity_at = now(), updated_at = now() WHERE id = $1",
+        vec![id.into()],
+    ))
+    .await?;
+    match on_session_completed(&txn, keys, engine, applicant, id).await {
+        Ok(()) => {}
+        Err(StoreError::Engine) => {
+            let _ = txn.rollback().await;
+            return Ok(FinishOutcome::EngineFailed);
+        }
+        Err(e) => return Err(e),
+    }
+    let score = stored_score(&txn, id).await?.ok_or(StoreError::Corrupt)?;
+    txn.commit().await?;
+    Ok(FinishOutcome::Finished(score))
 }
 
 // ------------------------------------------------------------------ sessions
