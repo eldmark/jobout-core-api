@@ -144,11 +144,11 @@ async fn oferta(m: &Mundo, c: &Cat, d: Datos<'_>) -> String {
             required_availability_to_travel, required_driver_license, vacancies, hiring_date, \
             publication_date, closed_at, profession_id, employment_sector_id, job_hierarchy_id, \
             minimum_academic_level_id, state_id, city_id, salary_range_id, working_shift_id, \
-            contract_type_id, applications_count, featured) \
+            contract_type_id, featured) \
          VALUES ('{id}', '{}', '{}', 'Construirás APIs en Rust para el equipo de producto.', \
             '{}', {}, true, 2, '{}', 'Lunes a viernes, 8 a 17', false, true, 2, \
             current_date + {}, current_date + {}, {cerrada}, '{}', '{}', '{}', '{}', '{}', '{}', \
-            '{}', '{}', '{}', 7, true)",
+            '{}', '{}', '{}', true)",
         d.empresa,
         d.titulo,
         d.estado,

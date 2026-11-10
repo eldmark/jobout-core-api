@@ -28,7 +28,9 @@ use super::{
     company_support::{db, parse_consulta, stmt, ApiError, Pagina},
     table::{Access, RouteSpec},
 };
-use crate::{company_gate::VISIBLE_COMPANY_SQL, offers::input, state::AppState};
+use crate::{
+    auth_user::AuthUser, company_gate::VISIBLE_COMPANY_SQL, offers::input, state::AppState,
+};
 
 /// Los únicos parámetros de `GET /offers`.
 const PERMITIDOS: [&str; 11] = [
@@ -172,6 +174,16 @@ fn detalle_sql() -> String {
 }
 
 /// `FROM`/`WHERE` de la visibilidad: se usa idéntica en el listado y en el detalle.
+/// La aplicación **propia** a la oferta (`o`): `{id, status}` o `null`. `$n` es el id de la
+/// cuenta de quien llama; nunca se ve la de otra persona.
+fn my_application_sql(n: usize) -> String {
+    format!(
+        "(SELECT jsonb_build_object('id', a.id::text, 'status', a.status::text) \
+          FROM job_applications a JOIN applicants ap ON ap.id = a.applicant_id \
+          WHERE a.job_offer_id = o.id AND ap.user_id = ${n}::uuid)"
+    )
+}
+
 fn visible_sql() -> String {
     format!(
         "FROM job_offers o JOIN companies c ON c.id = o.company_id \
@@ -268,6 +280,7 @@ fn json_de(texto: String) -> Result<Value, DbErr> {
 async fn list(
     State(s): State<AppState>,
     RawQuery(raw): RawQuery,
+    user: AuthUser,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Fallo> {
     cuerpo(body)?;
@@ -286,8 +299,10 @@ async fn list(
         valores.push(id.clone().into());
         filtros.push_str(&format!(" AND o.{col} = ${}::uuid", valores.len()));
     }
+    valores.push(user.id.clone().into());
+    let mia = my_application_sql(valores.len());
     let sql = format!(
-        "SELECT jsonb_build_object({}, 'my_application', NULL)::text, o.publication_date::text, \
+        "SELECT jsonb_build_object({}, 'my_application', {mia})::text, o.publication_date::text, \
                 o.id::text \
          {} AND ($1::date IS NULL OR (o.publication_date, o.id) {cmp} ($1::date, $2::uuid)){filtros} \
          ORDER BY o.publication_date {dir}, o.id {dir} LIMIT $3",
@@ -324,18 +339,20 @@ async fn list(
 async fn read(
     State(s): State<AppState>,
     Path(id): Path<String>,
+    user: AuthUser,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Fallo> {
     cuerpo(body)?;
     let id = input::uuid_canonico(&id).ok_or(ApiError::NotFound)?;
+    let mia = my_application_sql(2);
     let sql = format!(
-        "SELECT jsonb_build_object({}, {}, 'my_application', NULL)::text {} AND o.id = $1::uuid",
+        "SELECT jsonb_build_object({}, {}, 'my_application', {mia})::text {} AND o.id = $1::uuid",
         resumen_sql(),
         detalle_sql(),
         visible_sql(),
     );
     let fila =
-        s.db.query_one(stmt(&sql, vec![id.into()]))
+        s.db.query_one(stmt(&sql, vec![id.into(), user.id.clone().into()]))
             .await
             .map_err(|e| Fallo::from(db("leer_oferta")(e)))?
             .ok_or(ApiError::NotFound)?;

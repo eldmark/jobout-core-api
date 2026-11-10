@@ -8,6 +8,7 @@ use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, Value};
 use serde_json::{json, Map, Value as Json};
 
 use super::{availability, Availability, Status};
+use crate::company_gate::VISIBLE_COMPANY_SQL;
 use crate::crypto::PiiKeys;
 
 fn stmt(sql: &str, valores: Vec<Value>) -> Statement {
@@ -61,21 +62,19 @@ pub async fn visible_offer_company<C: ConnectionTrait>(
     db: &C,
     offer_id: &str,
 ) -> Result<Option<String>, DbErr> {
-    db.query_one(stmt(
-        "SELECT o.company_id::text FROM job_offers o \
-         JOIN companies c ON c.id = o.company_id \
-         WHERE o.id = $1::uuid AND o.status = 'published' \
-           AND c.active AND c.deleted_at IS NULL AND c.verified_at IS NOT NULL \
-           AND EXISTS (SELECT 1 FROM memberships m \
-                       WHERE m.company_id = c.id AND m.status = 'active' \
-                         AND m.start_date <= (now() AT TIME ZONE 'UTC')::date \
-                         AND (now() AT TIME ZONE 'UTC')::date <= m.expiration_date) \
-         FOR SHARE OF o",
-        vec![offer_id.to_string().into()],
-    ))
-    .await?
-    .map(|f| col(&f, 0))
-    .transpose()
+    // La misma regla que el listado de candidatos (`routes::offers_public`): publicada, no
+    // vencida por `hiring_date` y de una empresa visible.
+    let sql = format!(
+        "SELECT o.company_id::text FROM job_offers o JOIN companies c ON c.id = o.company_id \
+         WHERE o.id = $1::uuid AND o.status = 'published' AND o.publication_date IS NOT NULL \
+           AND (o.hiring_date IS NULL OR o.hiring_date >= (now() AT TIME ZONE 'UTC')::date) \
+           AND {VISIBLE_COMPANY_SQL} \
+         FOR SHARE OF o"
+    );
+    db.query_one(stmt(&sql, vec![offer_id.to_string().into()]))
+        .await?
+        .map(|f| col(&f, 0))
+        .transpose()
 }
 
 /// ¿La persona es reclutadora vigente de esa empresa?

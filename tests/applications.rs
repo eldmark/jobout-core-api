@@ -1536,3 +1536,50 @@ async fn nada_de_lo_compartido_llega_al_log() {
     }
     e.m.db.cleanup().await;
 }
+
+// ------------------------------------------------------------------ my_application (paso 5)
+
+/// `my_application` del listado y del detalle públicos: la aplicación **propia** `{id, status}`
+/// o `null`; jamás la de otra persona.
+#[tokio::test]
+async fn my_application_es_la_propia_o_null() {
+    let e = escenario().await;
+    let otra = oferta_sql(&e.m, &e.emp, "published", false, "").await;
+    let v = aplicar_ok(&e, &e.ana, &e.oferta, &MINIMO).await;
+    let id = v["id"].as_str().unwrap();
+    // Beto aplica a la otra: Ana no debe ver nada ahí.
+    aplicar_ok(&e, &e.beto, &otra, &MINIMO).await;
+
+    for (persona, oferta, esperado) in [
+        (&e.ana, &e.oferta, Some(id)),
+        (&e.ana, &otra, None),
+        (&e.beto, &e.oferta, None),
+    ] {
+        let d = e.m.get(&format!("/api/v1/offers/{oferta}"), persona).await;
+        assert_eq!(d.status, StatusCode::OK, "{}", d.text);
+        match esperado {
+            Some(id) => {
+                assert_eq!(d.json["my_application"]["id"], id);
+                assert_eq!(d.json["my_application"]["status"], "applied");
+                assert_eq!(d.json["my_application"].as_object().unwrap().len(), 2);
+            }
+            None => assert!(d.json["my_application"].is_null(), "{}", d.text),
+        }
+        let l = e.m.get("/api/v1/offers?limit=50", persona).await;
+        let it = l.json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == oferta.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(it["my_application"]["id"].as_str(), esperado, "{it}");
+    }
+    // Cambia con el estado.
+    mover(&e, id, Status::UnderReview).await.unwrap();
+    let d =
+        e.m.get(&format!("/api/v1/offers/{}", e.oferta), &e.ana)
+            .await;
+    assert_eq!(d.json["my_application"]["status"], "under_review");
+    e.m.db.cleanup().await;
+}
