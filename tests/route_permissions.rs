@@ -432,7 +432,7 @@ async fn la_migracion_baja_y_sube() {
     let db = TestDb::migrated().await;
     let (_, id) = registrar(&db, "down@correo-prueba.com").await;
     dar_rol(&db, &id, "recruiter").await;
-    Migrator::down(&db.conn, Some(1)).await.expect("down");
+    Migrator::down(&db.conn, Some(2)).await.expect("down");
     assert_eq!(
         codigos(&db, "SELECT code FROM roles ORDER BY 1").await,
         ["admin", "applicant"]
