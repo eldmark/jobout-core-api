@@ -13,4 +13,6 @@ pub struct AppState {
     pub jwt: Arc<JwtKeys>,
     /// Dónde se guardan los archivos (los CVs). Disco privado en desarrollo; S3 más adelante.
     pub blobs: Arc<dyn BlobStore>,
+    /// El motor de la entrevista. Detrás del trait para que las pruebas enchufen un guion o uno que falla.
+    pub engine: crate::interview::SharedEngine,
 }

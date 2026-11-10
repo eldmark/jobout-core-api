@@ -17,8 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, SqlErr, Statement, TransactionTrait,
-    Value,
+    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, RuntimeErr, SqlErr, Statement,
+    TransactionTrait, Value,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -26,8 +26,9 @@ use uuid::Uuid;
 use crate::{
     crypto::PiiKeys,
     interview::{
+        closing_message,
         store_crypto::{decrypt_turn_text, encrypt_turn_text},
-        Speaker, TurnKind,
+        InterviewEngine, Level, Message, RecruiterCode, RecruiterConfig, Speaker, TurnKind,
     },
 };
 
@@ -284,6 +285,218 @@ pub async fn last_recruiter_turn<C: ConnectionTrait>(
         ))
         .await?;
     fila.map(|r| turn_from_row(keys, &r)).transpose()
+}
+
+// ------------------------------------------------------------------ answering
+
+/// Most turns (both speakers) a session may hold. A safety net: the engine ends an interview long
+/// before this. When there is no room for another full exchange, the session is closed.
+pub const MAX_TURNS: i32 = 40;
+
+/// Most answers one person may send in [`TURN_WINDOW_SECS`] seconds, across all their sessions.
+pub const MAX_ANSWERS_PER_WINDOW: i64 = 20;
+pub const TURN_WINDOW_SECS: i64 = 60;
+
+/// What [`answer_turn`] did. Every variant except `Replied` left the database untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerOutcome {
+    /// Both turns were saved. `done`: the session is now `completed`.
+    Replied { turn: Turn, done: bool },
+    /// Does not exist or is somebody else's.
+    NotFound,
+    /// Exists, but is not `in_progress`.
+    InvalidState,
+    /// Another turn of this session is in flight (its row lock is held).
+    Busy,
+    /// The person already sent [`MAX_ANSWERS_PER_WINDOW`] answers in the last minute.
+    RateLimited { retry_after_secs: u64 },
+    /// The engine failed (or the recruiter or level is unknown to it): nothing was saved.
+    EngineFailed,
+}
+
+/// `55P03` (`lock_not_available`): what `FOR UPDATE NOWAIT` raises when the row is locked.
+fn is_lock_busy(e: &DbErr) -> bool {
+    let (DbErr::Query(RuntimeErr::SqlxError(inner)) | DbErr::Exec(RuntimeErr::SqlxError(inner))) =
+        e
+    else {
+        return false;
+    };
+    matches!(inner, sea_orm::sqlx::Error::Database(d) if d.code().as_deref() == Some("55P03"))
+}
+
+/// Hook for step 8 (JB-48): runs **inside the transaction** that closes a session, after the
+/// closing turn is written and the status is already `completed`, and before the commit. Whatever
+/// it does (the score, the level progress) is therefore all-or-nothing with the closing itself.
+///
+/// TODO(step 8): compute and persist the score (`interview_scores`) with `engine.evaluate` over the
+/// session's rubric version, and update `applicant_level_progress` (best score, sessions completed,
+/// unlock of the next level). Until then a completed session has no score row.
+#[allow(clippy::unused_async)]
+pub async fn on_session_completed<C: ConnectionTrait>(
+    _db: &C,
+    _keys: &PiiKeys,
+    _engine: &(dyn InterviewEngine + Send + Sync),
+    _applicant: Uuid,
+    _session_id: Uuid,
+) -> Result<(), StoreError> {
+    Ok(())
+}
+
+/// Save the person's answer and the recruiter's reply, or neither.
+///
+/// One transaction: the session row is locked with `FOR UPDATE NOWAIT`, so a second simultaneous
+/// turn fails fast with [`AnswerOutcome::Busy`] instead of waiting, and `seq` is computed under the
+/// lock so it can never repeat. The engine is stateless: it is handed the whole history plus the new
+/// answer. If it fails the transaction is dropped and the answer is not kept.
+///
+/// `text` is already trimmed and validated by the caller.
+pub async fn answer_turn(
+    db: &DatabaseConnection,
+    keys: &PiiKeys,
+    engine: &(dyn InterviewEngine + Send + Sync),
+    applicant: Uuid,
+    id: Uuid,
+    text: &str,
+) -> Result<AnswerOutcome, StoreError> {
+    let txn = db.begin().await?;
+    let fila = match txn
+        .query_one(stmt(
+            "SELECT s.status::text, r.code, l.code \
+             FROM interview_sessions s \
+             JOIN ai_recruiters r ON r.id = s.ai_recruiter_id \
+             JOIN interview_levels l ON l.id = s.interview_level_id \
+             WHERE s.id = $1 AND s.applicant_id = $2 AND s.status <> 'created' \
+             FOR UPDATE OF s NOWAIT",
+            vec![id.into(), applicant.into()],
+        ))
+        .await
+    {
+        Ok(f) => f,
+        Err(e) if is_lock_busy(&e) => {
+            let _ = txn.rollback().await;
+            return Ok(AnswerOutcome::Busy);
+        }
+        Err(_) => return Err(StoreError::Db),
+    };
+    let Some(fila) = fila else {
+        let _ = txn.rollback().await;
+        return Ok(AnswerOutcome::NotFound);
+    };
+    let c = |_| StoreError::Corrupt;
+    let status: String = fila.try_get_by_index(0).map_err(c)?;
+    let recruiter_code: String = fila.try_get_by_index(1).map_err(c)?;
+    let level_code: String = fila.try_get_by_index(2).map_err(c)?;
+    if status != "in_progress" {
+        let _ = txn.rollback().await;
+        return Ok(AnswerOutcome::InvalidState);
+    }
+
+    // The window is per person (all their sessions), and the lock makes the count exact: a person
+    // has one open session, and its row is ours.
+    let ventana = txn
+        .query_one(stmt(
+            "SELECT count(*)::bigint, \
+                    COALESCE(GREATEST(1, CEIL($2::double precision \
+                        - extract(epoch from (now() - min(t.created_at)))))::bigint, 1) \
+             FROM interview_turns t \
+             JOIN interview_sessions s ON s.id = t.interview_session_id \
+             WHERE s.applicant_id = $1 AND t.speaker = 'applicant' \
+               AND t.created_at > now() - make_interval(secs => $2::double precision)",
+            vec![applicant.into(), (TURN_WINDOW_SECS as f64).into()],
+        ))
+        .await?
+        .ok_or(StoreError::Corrupt)?;
+    let recientes: i64 = ventana.try_get_by_index(0).map_err(c)?;
+    if recientes >= MAX_ANSWERS_PER_WINDOW {
+        let espera: i64 = ventana.try_get_by_index(1).map_err(c)?;
+        let _ = txn.rollback().await;
+        return Ok(AnswerOutcome::RateLimited {
+            retry_after_secs: espera.clamp(1, TURN_WINDOW_SECS) as u64,
+        });
+    }
+
+    let turnos = turns_of(&txn, keys, id).await?;
+    let ultimo = turnos.last().map_or(0, |t| t.seq);
+    let (seq_persona, seq_recruiter) = (ultimo + 1, ultimo + 2);
+
+    let (Some(recruiter), Some(level)) = (
+        RecruiterCode::from_code(&recruiter_code),
+        Level::from_code(&level_code),
+    ) else {
+        let _ = txn.rollback().await;
+        return Ok(AnswerOutcome::EngineFailed);
+    };
+    let config = RecruiterConfig { recruiter, level };
+    let mut historial: Vec<Message> = turnos
+        .iter()
+        .map(|t| Message {
+            speaker: if t.speaker == "recruiter" {
+                Speaker::Recruiter
+            } else {
+                Speaker::Candidate
+            },
+            text: t.text.clone(),
+        })
+        .collect();
+    historial.push(Message::candidate(text));
+    let Ok(siguiente) = engine.next_turn(&config, &historial) else {
+        let _ = txn.rollback().await;
+        return Ok(AnswerOutcome::EngineFailed);
+    };
+
+    // Closed by the engine, or by the cap: no room left for another full exchange.
+    let cierra = siguiente.done || seq_recruiter + 2 > MAX_TURNS;
+    let (kind, mensaje) = if cierra {
+        let mensaje = if siguiente.done {
+            siguiente.message
+        } else {
+            closing_message(recruiter).to_string()
+        };
+        ("closing", mensaje)
+    } else {
+        (persisted_kind(siguiente.kind), siguiente.message)
+    };
+
+    insert_turn(
+        &txn,
+        keys,
+        id,
+        seq_persona,
+        Speaker::Candidate,
+        "answer",
+        text,
+    )
+    .await?;
+    insert_turn(
+        &txn,
+        keys,
+        id,
+        seq_recruiter,
+        Speaker::Recruiter,
+        kind,
+        &mensaje,
+    )
+    .await?;
+    let sql = if cierra {
+        "UPDATE interview_sessions SET status = 'completed', completed_at = now(), \
+                last_activity_at = now(), updated_at = now() WHERE id = $1"
+    } else {
+        "UPDATE interview_sessions SET last_activity_at = now(), updated_at = now() WHERE id = $1"
+    };
+    txn.execute(stmt(sql, vec![id.into()])).await?;
+    if cierra {
+        on_session_completed(&txn, keys, engine, applicant, id).await?;
+    }
+    txn.commit().await?;
+    Ok(AnswerOutcome::Replied {
+        turn: Turn {
+            seq: seq_recruiter,
+            speaker: "recruiter".to_string(),
+            kind: kind.to_string(),
+            text: mensaje,
+        },
+        done: cierra,
+    })
 }
 
 // ------------------------------------------------------------------ sessions

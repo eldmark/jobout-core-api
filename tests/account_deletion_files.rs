@@ -104,6 +104,7 @@ async fn mundo() -> Mundo {
         pii: pii(),
         jwt: Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap()),
         blobs: blobs.clone(),
+        engine: jobout_core_api::interview::default_engine(),
     };
     let app = app_with_state(state.clone());
     Mundo {
