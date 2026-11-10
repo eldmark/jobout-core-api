@@ -344,7 +344,7 @@ async fn u1_subir_un_pdf_valido() {
         .collect();
     assert!(codigos.contains(&"rust"), "{codigos:?}");
     assert!(p["skills"][0]["skill_id"].as_str().is_some());
-    assert!(c.to_string().find("storage_key").is_none());
+    assert!(!c.to_string().contains("storage_key"));
     assert_eq!(db.count("SELECT count(*) FROM cv_extractions").await, 1);
     db.cleanup().await;
 }
