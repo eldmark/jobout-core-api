@@ -8,6 +8,7 @@ pub mod blob;
 pub mod crypto;
 pub mod cv;
 pub mod interview;
+pub mod interview_store;
 pub mod jwt;
 pub mod login_attempts;
 pub mod password;

@@ -24,6 +24,7 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 migration = { version = "0.1.0", path = "migration" }
+uuid = { version = "1.26.1", features = ["v7"] }
 
 # Auth (JB-07): contraseñas y JWT
 argon2 = "0.6"
