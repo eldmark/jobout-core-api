@@ -18,8 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Rust del CI = Rust de la imagen. Con @stable, clippy de una versión nueva aceptaba lo que el
+      # de la imagen (el que corre `docker compose`) rechaza, y al revés.
+      - id: rust
+        run: bash .github/rust-version.sh >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust.outputs.version }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
@@ -46,7 +51,11 @@ jobs:
       TEST_DATABASE_URL: postgres://jobout:jobout@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - id: rust
+        run: bash .github/rust-version.sh >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Unitarias
         run: cargo test --workspace --lib --bins
@@ -72,7 +81,11 @@ jobs:
       DATABASE_URL: postgres://jobout:jobout@localhost:5432/jobout_migrations
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - id: rust
+        run: bash .github/rust-version.sh >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - name: Toda migración implementa down
         run: |

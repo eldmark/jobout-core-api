@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use jobout_core_api::{
-    app_with_state, blob::LocalBlobStore, crypto::PiiKeys, jwt::JwtKeys, state::AppState,
-    storage_cleanup,
+    app_with_state, blob::LocalBlobStore, crypto::PiiKeys, interview_store, jwt::JwtKeys,
+    state::AppState, storage_cleanup,
 };
 use sea_orm::Database;
 use std::sync::Arc;
@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
         pii: Arc::new(pii),
         jwt: Arc::new(jwt),
         blobs: Arc::new(blobs),
+        engine: jobout_core_api::interview::default_engine(),
     };
 
     let port: u16 = std::env::var("PORT")
@@ -59,7 +60,7 @@ async fn shutdown() {
     tracing::info!("apagando");
 }
 
-/// Reintenta cada 60 s los archivos pendientes de borrar. Un error se registra y no derriba nada.
+/// Cada 60 s reintenta los archivos pendientes de borrar y abandona las entrevistas pausadas de más de 7 días. Un error se registra y no derriba nada.
 async fn cleanup_loop(state: AppState, mut parada: tokio::sync::watch::Receiver<bool>) {
     let mut reloj = tokio::time::interval(std::time::Duration::from_secs(60));
     reloj.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -78,6 +79,18 @@ async fn cleanup_loop(state: AppState, mut parada: tokio::sync::watch::Receiver<
             }
             Ok(_) => {}
             Err(_) => tracing::error!(donde = "limpieza_archivos", "error interno"),
+        }
+        // Una entrevista pausada más de 7 días se abandona sola y libera el cupo (S13).
+        match interview_store::abandon_stale_paused(
+            &state.db,
+            std::time::SystemTime::now(),
+            interview_store::PAUSED_MAX_AGE,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(abandonadas = n, "limpieza de entrevistas pausadas"),
+            Err(_) => tracing::error!(donde = "limpieza_entrevistas", "error interno"),
         }
     }
 }

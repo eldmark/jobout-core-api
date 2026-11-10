@@ -33,7 +33,7 @@ async fn e1_las_tablas_de_perfil_son_reversibles() {
     }
     let antes = esquema(&db).await;
     // Dos pasos: cvs y perfil.
-    Migrator::down(&db.conn, Some(2)).await.expect("down");
+    Migrator::down(&db.conn, Some(5)).await.expect("down");
     for t in TABLAS {
         let n = db
             .count(&format!(

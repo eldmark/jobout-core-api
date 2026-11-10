@@ -58,6 +58,7 @@ fn estado_sin_base() -> AppState {
         pii: pii(),
         jwt: jwt(),
         blobs: jobout_core_api::blob::memory_store(),
+        engine: jobout_core_api::interview::default_engine(),
     }
 }
 
@@ -102,6 +103,17 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/profile", false),
         ("/api/v1/cvs/{id}/extraction", false),
         ("/api/v1/cvs/{id}/extraction/confirm", false),
+        ("/api/v1/interviews", false),
+        ("/api/v1/interviews/{id}", false),
+        ("/api/v1/interviews/{id}/pause", false),
+        ("/api/v1/interviews/{id}/resume", false),
+        ("/api/v1/interviews/{id}/abandon", false),
+        ("/api/v1/interviews/{id}/turns", false),
+        ("/api/v1/interviews/{id}/finish", false),
+        ("/api/v1/interviews/{id}/score", false),
+        ("/api/v1/recruiters", false),
+        ("/api/v1/levels", false),
+        ("/api/v1/progress", false),
     ]
     .into_iter()
     .map(|(p, publica)| (p.to_string(), publica))
@@ -250,6 +262,7 @@ async fn t5_la_proteccion_no_depende_del_handler() {
         pii: pii(),
         jwt: jwt(),
         blobs: jobout_core_api::blob::memory_store(),
+        engine: jobout_core_api::interview::default_engine(),
     };
     // Una cuenta real, para tener un token válido.
     let (_, cuenta) = {

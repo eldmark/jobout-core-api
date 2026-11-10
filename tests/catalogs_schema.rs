@@ -74,12 +74,12 @@ async fn k1_los_catalogos_tienen_la_forma_estandar() {
     db.cleanup().await;
 }
 
-/// K2: bajar las tres migraciones nuevas y subirlas deja el mismo esquema.
+/// K2: bajar las migraciones nuevas y subirlas deja el mismo esquema.
 #[tokio::test]
 async fn k2_down_y_up_dejan_el_mismo_esquema() {
     let db = TestDb::migrated().await;
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(3)).await.expect("down");
+    Migrator::down(&db.conn, Some(6)).await.expect("down");
     for t in CATALOGOS {
         let n = db
             .count(&format!(
