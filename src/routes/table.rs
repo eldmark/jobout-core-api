@@ -23,7 +23,7 @@ use axum::{
     Router,
 };
 
-use super::{auth, catalogs, cvs, health, interviews, me, profile};
+use super::{auth, catalogs, cvs, health, interview_catalog, interviews, me, profile};
 use crate::{auth_user::AuthUser, state::AppState};
 
 /// Tope del cuerpo de cualquier petición. Todas las rutas actuales son JSON pequeños.
@@ -59,6 +59,7 @@ pub fn all() -> Vec<RouteSpec> {
     rutas.extend(cvs::routes());
     rutas.extend(profile::routes());
     rutas.extend(interviews::routes());
+    rutas.extend(interview_catalog::routes());
     rutas
 }
 

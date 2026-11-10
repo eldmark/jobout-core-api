@@ -107,6 +107,9 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/interviews/{id}/pause", false),
         ("/api/v1/interviews/{id}/resume", false),
         ("/api/v1/interviews/{id}/abandon", false),
+        ("/api/v1/recruiters", false),
+        ("/api/v1/levels", false),
+        ("/api/v1/progress", false),
     ]
     .into_iter()
     .map(|(p, publica)| (p.to_string(), publica))
