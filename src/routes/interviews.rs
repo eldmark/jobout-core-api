@@ -5,9 +5,11 @@
 //!   existe y un id que no es UUID dan el mismo 404 `no_encontrado`.
 //! - El texto de los turnos se guarda siempre cifrado (`interview_store::insert_turn`) y se
 //!   descifra solo al leerlo; ni un error ni un log lo llevan.
+//! - La cuota mensual del plan (`limite_del_plan`) es la última validación de `POST /interviews` y
+//!   se aplica dentro de la transacción que crea la sesión (`crate::quota`).
 //! - Los turnos (`POST .../turns`, paso 7) guardan la respuesta y la réplica del recruiter en una
 //!   transacción con la fila de la sesión bloqueada (`interview_store::answer_turn`).
-//! - Quedan fuera (pasos siguientes): `finish`, `score` y la cuota `limite_del_plan`.
+//! - Quedan fuera (pasos siguientes): `finish` y `score`.
 
 use std::collections::HashMap;
 
@@ -30,6 +32,7 @@ use crate::{
         self as store, AnswerOutcome, CreateOutcome, Cursor, ResumeOutcome, StoreError, Transition,
         TransitionOutcome,
     },
+    quota::QuotaPolicy,
     state::AppState,
 };
 
@@ -93,6 +96,7 @@ enum ApiError {
     Locked,
     Unavailable,
     SessionOpen(Uuid),
+    PlanLimit(String),
     BadState,
     Engine,
     /// Otro turno de la misma sesión está en vuelo.
@@ -133,7 +137,13 @@ impl IntoResponse for ApiError {
                 StatusCode::CONFLICT,
                 "sesion_en_curso",
                 "Ya tienes una entrevista en curso. Termínala o abandónala para empezar otra.",
-                Some(id),
+                Some(("session_id", json!(id))),
+            ),
+            Self::PlanLimit(renews_at) => (
+                StatusCode::FORBIDDEN,
+                "limite_del_plan",
+                "Ya usaste las entrevistas de tu plan este mes. Se renuevan el primer día del mes siguiente.",
+                Some(("renews_at", json!(renews_at))),
             ),
             Self::BadState => (
                 StatusCode::CONFLICT,
@@ -173,8 +183,8 @@ impl IntoResponse for ApiError {
             ),
         };
         let mut cuerpo = json!({"error": codigo, "message": mensaje});
-        if let Some(id) = extra {
-            cuerpo["session_id"] = json!(id);
+        if let Some((campo, valor)) = extra {
+            cuerpo[campo] = valor;
         }
         (estado, Json(cuerpo)).into_response()
     }
@@ -222,7 +232,8 @@ async fn create(
     user: AuthUser,
     cuerpo: Bytes,
 ) -> Result<Response, ApiError> {
-    // Orden del contrato: cuerpo -> existen -> disponible -> desbloqueado -> sin sesión activa.
+    // Orden del contrato: cuerpo -> existen -> disponible -> desbloqueado -> sin sesión activa -> cuota
+    // (esta última, dentro de `create_session`).
     let (recruiter_id, level_id) = leer_cuerpo(&cuerpo)?;
     let applicant = applicant_de(&state, &user).await?;
 
@@ -264,12 +275,14 @@ async fn create(
         recruiter.id,
         level.id,
         &primera.message,
+        QuotaPolicy::current(),
     )
     .await
     .map_err(interno("crear_sesion"))?
     {
         CreateOutcome::Created { session_id } => session_id,
         CreateOutcome::OpenExists { session_id } => return Err(ApiError::SessionOpen(session_id)),
+        CreateOutcome::LimitReached { renews_at } => return Err(ApiError::PlanLimit(renews_at)),
     };
 
     let entrevista = store::get_session(&state.db, &state.pii, applicant, session_id)
