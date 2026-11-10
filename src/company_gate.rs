@@ -10,6 +10,16 @@
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement};
 use uuid::Uuid;
 
+/// La misma regla como condición SQL para los listados (alias `c` = `companies`): empresa viva,
+/// activa, verificada y con una membresía vigente hoy (fecha UTC). Es lo que decide qué ofertas
+/// ven los candidatos; se evalúa dentro de la consulta para no hacer una por oferta.
+pub const VISIBLE_COMPANY_SQL: &str = "c.deleted_at IS NULL AND c.active \
+     AND c.verified_at IS NOT NULL \
+     AND EXISTS (SELECT 1 FROM memberships m \
+                 WHERE m.company_id = c.id AND m.status = 'active' \
+                   AND m.start_date <= (now() AT TIME ZONE 'UTC')::date \
+                   AND (now() AT TIME ZONE 'UTC')::date <= m.expiration_date)";
+
 /// Por qué una empresa no puede publicar ni usar el panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {

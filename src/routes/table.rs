@@ -34,7 +34,7 @@ use axum::{
 
 use super::{
     admin_companies, auth, catalogs, companies, cvs, health, interview_catalog, interviews, me,
-    offers, profile,
+    offers, offers_public, profile,
 };
 use crate::{
     auth_user::{AuthError, AuthUser},
@@ -90,6 +90,7 @@ pub fn all() -> Vec<RouteSpec> {
     rutas.extend(companies::routes());
     rutas.extend(admin_companies::routes());
     rutas.extend(offers::routes());
+    rutas.extend(offers_public::routes());
     rutas
 }
 

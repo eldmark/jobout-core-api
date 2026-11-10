@@ -9,5 +9,6 @@ pub mod interview_catalog;
 pub mod interviews;
 pub mod me;
 pub mod offers;
+pub mod offers_public;
 pub mod profile;
 pub mod table;

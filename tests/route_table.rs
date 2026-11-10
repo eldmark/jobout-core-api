@@ -172,6 +172,8 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
             false,
             Some("offer.close"),
         ),
+        ("/api/v1/offers", false, None),
+        ("/api/v1/offers/{id}", false, None),
     ]
     .into_iter()
     .map(|(p, publica, permiso)| (p.to_string(), publica, permiso.map(str::to_string)))
