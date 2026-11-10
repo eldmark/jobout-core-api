@@ -53,6 +53,9 @@ fn jwt() -> Arc<JwtKeys> {
 }
 
 fn app_con(db: &TestDb, engine: SharedEngine) -> Router {
+    // La cuota mensual se mide en tests/interview_quota.rs; aquí se apaga con el interruptor.
+    static UNA_VEZ: std::sync::Once = std::sync::Once::new();
+    UNA_VEZ.call_once(|| std::env::set_var("ENFORCE_PLAN_LIMITS", "false"));
     app_with_state(AppState {
         db: db.conn.clone(),
         pii: pii(),

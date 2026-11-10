@@ -31,6 +31,7 @@ use crate::{
         InterviewEngine, Level, Message, RecruiterCode, RecruiterConfig, RubricCriterion, Speaker,
         TurnKind,
     },
+    quota::{self, QuotaPolicy},
 };
 
 /// A session paused for longer than this is abandoned by the cleanup task.
@@ -867,7 +868,7 @@ pub async fn finish_session(
 // ------------------------------------------------------------------ sessions
 
 /// What [`create_session`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateOutcome {
     Created {
         session_id: Uuid,
@@ -876,6 +877,26 @@ pub enum CreateOutcome {
     OpenExists {
         session_id: Uuid,
     },
+    /// The monthly quota of the person's plan is used up; `renews_at` is the first instant of the
+    /// next UTC month (ISO 8601). Nothing was written.
+    LimitReached {
+        renews_at: String,
+    },
+}
+
+/// The user that owns an applicant row.
+async fn user_of_applicant<C: ConnectionTrait>(
+    db: &C,
+    applicant: Uuid,
+) -> Result<Uuid, StoreError> {
+    let row = db
+        .query_one(stmt(
+            "SELECT user_id FROM applicants WHERE id = $1",
+            vec![applicant.into()],
+        ))
+        .await?
+        .ok_or(StoreError::Corrupt)?;
+    Ok(row.try_get_by_index(0)?)
 }
 
 /// The id of the person's open session (`in_progress` or `paused`), if any.
@@ -907,10 +928,14 @@ pub async fn create_session(
     recruiter: Uuid,
     level: Uuid,
     first_question: &str,
+    policy: QuotaPolicy,
 ) -> Result<CreateOutcome, StoreError> {
     // The winner can finish (abandon, delete) between our violation and our look-up: retry.
     for _ in 0..3 {
         let txn = db.begin().await?;
+        // Una creación a la vez por persona: la cuota se cuenta y se anota sin carreras.
+        let user = user_of_applicant(&txn, applicant).await?;
+        quota::lock_user(&txn, user).await?;
         let version = txn
             .query_one(stmt(
                 "SELECT v.id FROM ai_recruiters r \
@@ -951,6 +976,15 @@ pub async fn create_session(
             }
             Err(_) => return Err(StoreError::Db),
         }
+        // Después del índice (la sesión abierta gana a la cuota, como dice el contrato) y antes
+        // de confirmar: si no cabe, se deshace todo, sesión incluida.
+        if policy.enforce {
+            if let Some(renews_at) = quota::exceeded(&txn, user, policy.now_micros).await? {
+                let _ = txn.rollback().await;
+                return Ok(CreateOutcome::LimitReached { renews_at });
+            }
+        }
+        quota::record_session(&txn, user, id, policy.now_micros).await?;
         insert_turn(
             &txn,
             keys,
