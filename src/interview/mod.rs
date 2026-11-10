@@ -9,6 +9,7 @@ mod bank;
 mod deterministic;
 mod evaluation;
 mod scripted;
+pub mod store_crypto;
 mod text;
 
 pub use deterministic::DeterministicEngine;
