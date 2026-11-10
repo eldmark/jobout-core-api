@@ -27,7 +27,10 @@ use axum::{
     Router,
 };
 
-use super::{auth, catalogs, cvs, health, interview_catalog, interviews, me, profile};
+use super::{
+    admin_companies, auth, catalogs, companies, cvs, health, interview_catalog, interviews, me,
+    profile,
+};
 use crate::{
     auth_user::{AuthError, AuthUser},
     state::AppState,
@@ -79,6 +82,8 @@ pub fn all() -> Vec<RouteSpec> {
     rutas.extend(profile::routes());
     rutas.extend(interviews::routes());
     rutas.extend(interview_catalog::routes());
+    rutas.extend(companies::routes());
+    rutas.extend(admin_companies::routes());
     rutas
 }
 
