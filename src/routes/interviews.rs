@@ -7,14 +7,16 @@
 //!   descifra solo al leerlo; ni un error ni un log lo llevan.
 //! - La cuota mensual del plan (`limite_del_plan`) es la última validación de `POST /interviews` y
 //!   se aplica dentro de la transacción que crea la sesión (`crate::quota`).
-//! - Quedan fuera (pasos siguientes): turnos, `finish` y `score`.
+//! - Los turnos (`POST .../turns`, paso 7) guardan la respuesta y la réplica del recruiter en una
+//!   transacción con la fila de la sesión bloqueada (`interview_store::answer_turn`).
+//! - Quedan fuera (pasos siguientes): `finish` y `score`.
 
 use std::collections::HashMap;
 
 use axum::{
     body::Bytes,
     extract::{rejection::QueryRejection, Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json,
@@ -27,7 +29,7 @@ use crate::{
     auth_user::AuthUser,
     interview::{DeterministicEngine, InterviewEngine, Level, RecruiterCode, RecruiterConfig},
     interview_store::{
-        self as store, CreateOutcome, Cursor, ResumeOutcome, StoreError, Transition,
+        self as store, AnswerOutcome, CreateOutcome, Cursor, ResumeOutcome, StoreError, Transition,
         TransitionOutcome,
     },
     quota::QuotaPolicy,
@@ -72,8 +74,21 @@ pub fn routes() -> Vec<RouteSpec> {
             body_limit: None,
             handler: post(abandon),
         },
+        RouteSpec {
+            path: "/api/v1/interviews/{id}/turns",
+            methods: &["POST"],
+            access: Access::Authenticated,
+            // 4000 caracteres Unicode (hasta 16 000 bytes) no caben en el tope global de 8 KB.
+            body_limit: Some(TURN_BODY_LIMIT),
+            handler: post(answer),
+        },
     ]
 }
+
+/// Tope de cuerpo de `POST .../turns`: 4000 caracteres de hasta 4 bytes más el JSON, con margen.
+const TURN_BODY_LIMIT: usize = 32 * 1024;
+/// Largo máximo de la respuesta, en caracteres Unicode (no bytes), ya recortada.
+const MAX_TEXT_CHARS: usize = 4000;
 
 enum ApiError {
     Invalid,
@@ -84,6 +99,10 @@ enum ApiError {
     PlanLimit(String),
     BadState,
     Engine,
+    /// Otro turno de la misma sesión está en vuelo.
+    Busy,
+    /// Demasiadas respuestas en el último minuto; segundos hasta poder volver.
+    TooMany(u64),
     Internal,
 }
 
@@ -138,6 +157,24 @@ impl IntoResponse for ApiError {
                 "El recruiter no está disponible ahora. Inténtalo en un momento.",
                 None,
             ),
+            Self::Busy => (
+                StatusCode::CONFLICT,
+                "turno_en_proceso",
+                "Tu respuesta anterior todavía se está procesando. Espera un momento.",
+                None,
+            ),
+            Self::TooMany(segundos) => {
+                let cuerpo = json!({
+                    "error": "demasiados_intentos",
+                    "message": "Estás respondiendo demasiado rápido. Espera un momento.",
+                });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, segundos.to_string())],
+                    Json(cuerpo),
+                )
+                    .into_response();
+            }
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "error_interno",
@@ -381,5 +418,58 @@ async fn remove(
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
+    }
+}
+
+// ------------------------------------------------------------------ POST /interviews/{id}/turns
+
+/// El cuerpo de un turno: `{text}` como texto, recortado, ni vacío ni de más de 4000 caracteres.
+/// Cualquier otra cosa es 422, sin repetir nada de lo recibido.
+fn leer_texto(cuerpo: &[u8]) -> Result<String, ApiError> {
+    let json: Value = serde_json::from_slice(cuerpo).map_err(|_| ApiError::Invalid)?;
+    let texto = json
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or(ApiError::Invalid)?
+        .trim();
+    if texto.is_empty() || texto.chars().count() > MAX_TEXT_CHARS {
+        return Err(ApiError::Invalid);
+    }
+    Ok(texto.to_string())
+}
+
+async fn answer(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    cuerpo: Bytes,
+) -> Result<Response, ApiError> {
+    let id = id_de_ruta(&id)?;
+    let texto = leer_texto(&cuerpo)?;
+    let applicant = applicant_de(&state, &user).await?;
+    match store::answer_turn(
+        &state.db,
+        &state.pii,
+        state.engine.as_ref(),
+        applicant,
+        id,
+        &texto,
+    )
+    .await
+    .map_err(interno("responder_turno"))?
+    {
+        AnswerOutcome::Replied { turn, done } => Ok((
+            StatusCode::CREATED,
+            Json(json!({ "turn": turn, "done": done })),
+        )
+            .into_response()),
+        AnswerOutcome::NotFound => Err(ApiError::NotFound),
+        AnswerOutcome::InvalidState => Err(ApiError::BadState),
+        AnswerOutcome::Busy => Err(ApiError::Busy),
+        AnswerOutcome::RateLimited { retry_after_secs } => Err(ApiError::TooMany(retry_after_secs)),
+        AnswerOutcome::EngineFailed => {
+            tracing::error!(donde = "motor", "motor no disponible");
+            Err(ApiError::Engine)
+        }
     }
 }

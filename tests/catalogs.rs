@@ -25,6 +25,7 @@ fn app(db: &TestDb) -> Router {
         ),
         jwt: Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap()),
         blobs: jobout_core_api::blob::memory_store(),
+        engine: jobout_core_api::interview::default_engine(),
     })
 }
 
