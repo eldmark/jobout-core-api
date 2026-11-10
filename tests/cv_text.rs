@@ -4,7 +4,7 @@
 //! no hay fixtures binarios en el repositorio.
 
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use jobout_core_api::cv::text::{
     detect_kind, extract_text, run_with_timeout, CvKind, Limits, TextError,
@@ -355,15 +355,31 @@ fn x6_el_tope_de_paginas_es_configurable() {
 // ---------- X7: tiempo ----------
 
 /// X7: el hilo que tarda más que el tope devuelve `TimedOut` sin esperar a que termine.
+///
+/// Sin reloj de pared: el trabajo queda bloqueado hasta que la prueba lo suelta, así que
+/// `TimedOut` solo puede volver si `run_with_timeout` NO esperó al trabajo. Si esperara, el
+/// trabajo se destraba solo tras la cota de seguridad y la bandera `termino` delata la espera.
 #[test]
 fn x7_un_trabajo_lento_devuelve_timed_out_a_tiempo() {
-    let t0 = Instant::now();
-    let r = run_with_timeout(Duration::from_millis(50), || {
-        std::thread::sleep(Duration::from_secs(3));
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+
+    let termino = Arc::new(AtomicBool::new(false));
+    let (soltar, espera) = mpsc::channel::<()>();
+    let marca = Arc::clone(&termino);
+    let r = run_with_timeout(Duration::from_millis(50), move || {
+        // Bloqueado hasta que la prueba suelta; la cota solo evita colgar si hay un error.
+        let _ = espera.recv_timeout(Duration::from_secs(20));
+        marca.store(true, Ordering::SeqCst);
         1
     });
     assert_eq!(r, Err(TextError::TimedOut));
-    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert!(
+        !termino.load(Ordering::SeqCst),
+        "run_with_timeout esperó a que el trabajo terminara"
+    );
+    // El hilo queda corriendo (no se puede cancelar): se libera para no dejarlo colgado.
+    let _ = soltar.send(());
 }
 
 #[test]
