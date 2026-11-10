@@ -109,6 +109,8 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/interviews/{id}/resume", false),
         ("/api/v1/interviews/{id}/abandon", false),
         ("/api/v1/interviews/{id}/turns", false),
+        ("/api/v1/interviews/{id}/finish", false),
+        ("/api/v1/interviews/{id}/score", false),
         ("/api/v1/recruiters", false),
         ("/api/v1/levels", false),
         ("/api/v1/progress", false),

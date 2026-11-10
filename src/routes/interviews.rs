@@ -9,7 +9,7 @@
 //!   se aplica dentro de la transacción que crea la sesión (`crate::quota`).
 //! - Los turnos (`POST .../turns`, paso 7) guardan la respuesta y la réplica del recruiter en una
 //!   transacción con la fila de la sesión bloqueada (`interview_store::answer_turn`).
-//! - Quedan fuera (pasos siguientes): `finish` y `score`.
+//! - `finish` y `score` (paso 8) cierran y puntúan con la misma función que usa el cierre por turno.
 
 use std::collections::HashMap;
 
@@ -29,8 +29,8 @@ use crate::{
     auth_user::AuthUser,
     interview::{DeterministicEngine, InterviewEngine, Level, RecruiterCode, RecruiterConfig},
     interview_store::{
-        self as store, AnswerOutcome, CreateOutcome, Cursor, ResumeOutcome, StoreError, Transition,
-        TransitionOutcome,
+        self as store, AnswerOutcome, CreateOutcome, Cursor, FinishOutcome, ResumeOutcome,
+        ScoreOutcome, StoreError, Transition, TransitionOutcome,
     },
     quota::QuotaPolicy,
     state::AppState,
@@ -82,6 +82,20 @@ pub fn routes() -> Vec<RouteSpec> {
             body_limit: Some(TURN_BODY_LIMIT),
             handler: post(answer),
         },
+        RouteSpec {
+            path: "/api/v1/interviews/{id}/finish",
+            methods: &["POST"],
+            access: Access::Authenticated,
+            body_limit: None,
+            handler: post(finish),
+        },
+        RouteSpec {
+            path: "/api/v1/interviews/{id}/score",
+            methods: &["GET"],
+            access: Access::Authenticated,
+            body_limit: None,
+            handler: get(score),
+        },
     ]
 }
 
@@ -101,6 +115,8 @@ enum ApiError {
     Engine,
     /// Otro turno de la misma sesión está en vuelo.
     Busy,
+    /// `finish` con menos de 2 respuestas: la sesión sigue abierta.
+    TooShort,
     /// Demasiadas respuestas en el último minuto; segundos hasta poder volver.
     TooMany(u64),
     Internal,
@@ -149,6 +165,12 @@ impl IntoResponse for ApiError {
                 StatusCode::CONFLICT,
                 "estado_invalido",
                 "La entrevista no está en un estado que permita esto.",
+                None,
+            ),
+            Self::TooShort => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "entrevista_muy_corta",
+                "Responde al menos dos preguntas antes de terminar la entrevista.",
                 None,
             ),
             Self::Engine => (
@@ -471,5 +493,47 @@ async fn answer(
             tracing::error!(donde = "motor", "motor no disponible");
             Err(ApiError::Engine)
         }
+    }
+}
+
+// ------------------------------------------------------------------ finish y score
+
+async fn finish(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<store::Score>, ApiError> {
+    let id = id_de_ruta(&id)?;
+    let applicant = applicant_de(&state, &user).await?;
+    match store::finish_session(&state.db, &state.pii, state.engine.as_ref(), applicant, id)
+        .await
+        .map_err(interno("terminar_sesion"))?
+    {
+        FinishOutcome::Finished(score) => Ok(Json(score)),
+        FinishOutcome::NotFound => Err(ApiError::NotFound),
+        FinishOutcome::InvalidState => Err(ApiError::BadState),
+        FinishOutcome::Busy => Err(ApiError::Busy),
+        FinishOutcome::TooShort => Err(ApiError::TooShort),
+        FinishOutcome::EngineFailed => {
+            tracing::error!(donde = "motor", "motor no disponible");
+            Err(ApiError::Engine)
+        }
+    }
+}
+
+async fn score(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<store::Score>, ApiError> {
+    let id = id_de_ruta(&id)?;
+    let applicant = applicant_de(&state, &user).await?;
+    match store::score_of(&state.db, applicant, id)
+        .await
+        .map_err(interno("leer_score"))?
+    {
+        ScoreOutcome::Found(score) => Ok(Json(score)),
+        ScoreOutcome::NotFound => Err(ApiError::NotFound),
+        ScoreOutcome::InvalidState => Err(ApiError::BadState),
     }
 }

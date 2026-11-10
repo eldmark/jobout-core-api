@@ -23,9 +23,9 @@ use jobout_core_api::{
     app_with_state,
     crypto::PiiKeys,
     interview::{
-        closing_message, store_crypto::encrypt_turn_text, DeterministicEngine, EngineError,
-        Evaluation, InterviewEngine, Level, Message, NextTurn, RecruiterCode, RecruiterConfig,
-        RubricCriterion, ScriptedEngine, SharedEngine, TurnKind,
+        closing_message, store_crypto::encrypt_turn_text, CriterionResult, DeterministicEngine,
+        EngineError, Evaluation, InterviewEngine, Level, Message, NextTurn, RecruiterCode,
+        RecruiterConfig, RubricCriterion, ScriptedEngine, SharedEngine, TurnKind,
     },
     jwt::JwtKeys,
     state::AppState,
@@ -131,8 +131,25 @@ impl InterviewEngine for ViaCompuerta {
     }
 }
 
+/// Lo que «evalúa» el motor guionado al cerrar (paso 8: cerrar guarda un score).
+fn evaluacion_fija() -> Evaluation {
+    Evaluation {
+        score: 100,
+        clarity: 50,
+        breakdown: vec![CriterionResult {
+            code: "especificidad".to_string(),
+            name: "Especificidad".to_string(),
+            points: 100,
+            max_points: 100,
+            why: "porque sí".to_string(),
+        }],
+        improvements: vec![],
+        confidence: None,
+    }
+}
+
 fn guion(turnos: Vec<NextTurn>) -> SharedEngine {
-    Arc::new(ScriptedEngine::new(turnos, Err(EngineError::NoAnswers)))
+    Arc::new(ScriptedEngine::new(turnos, Ok(evaluacion_fija())))
 }
 
 fn turno(texto: &str, kind: TurnKind, done: bool) -> NextTurn {
