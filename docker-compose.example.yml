@@ -35,6 +35,11 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://jobout:jobout@postgres:5432/jobout
+      # Respuestas del recruiter con IA (JB-88): apagadas salvo que .env diga lo contrario.
+      AI_REPLIES_ENABLED: ${AI_REPLIES_ENABLED:-false}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODELS: ${OPENROUTER_MODELS:-}
+      OPENROUTER_TIMEOUT_MS: ${OPENROUTER_TIMEOUT_MS:-8000}
     ports:
       - "8080:8080"
     volumes:

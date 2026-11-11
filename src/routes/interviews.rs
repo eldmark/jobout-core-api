@@ -321,11 +321,20 @@ async fn create(
             .map_err(interno("leer_foco_oferta"))?,
         None => None,
     };
+    // The configured engine words it (JB-88: the AI wording, when enabled). The opening has always
+    // been the deterministic one and cannot fail, so an engine that errors here changes nothing.
     let primera = match &foco {
-        Some(f) => DeterministicEngine.next_turn_for_offer(&config, f, &[]),
-        None => DeterministicEngine.next_turn(&config, &[]),
-    }
-    .map_err(|_| ApiError::Engine)?;
+        Some(f) => state.engine.next_turn_for_offer(&config, f, &[]),
+        None => state.engine.next_turn(&config, &[]),
+    };
+    let primera = match primera {
+        Ok(t) => t,
+        Err(_) => match &foco {
+            Some(f) => DeterministicEngine.next_turn_for_offer(&config, f, &[]),
+            None => DeterministicEngine.next_turn(&config, &[]),
+        }
+        .map_err(|_| ApiError::Engine)?,
+    };
 
     // Dos creaciones simultáneas pasan la comprobación de arriba: el índice único parcial decide.
     let session_id = match store::create_session_for_offer(

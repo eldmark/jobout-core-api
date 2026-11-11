@@ -9,6 +9,7 @@ mod bank;
 mod deterministic;
 mod evaluation;
 mod focus;
+pub mod openrouter;
 mod scripted;
 pub mod store_crypto;
 mod text;
@@ -16,6 +17,7 @@ mod text;
 pub use bank::closing as closing_message;
 pub use deterministic::DeterministicEngine;
 pub use focus::OfferFocus;
+pub use openrouter::{OpenRouterConfig, OpenRouterEngine};
 pub use scripted::ScriptedEngine;
 
 /// The engine as the application holds it: shared between requests, so it must be thread-safe.
