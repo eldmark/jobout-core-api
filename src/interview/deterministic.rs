@@ -1,6 +1,7 @@
 //! Deterministic rule-based engine: the recruiter of the text-only phase.
 
 use super::bank::{self, MAX_FOLLOW_UPS};
+use super::focus;
 use super::text;
 use super::*;
 
@@ -26,9 +27,8 @@ enum Last {
     Accepted,
 }
 
-fn replay(config: &RecruiterConfig, history: &[Message]) -> Progress {
+fn replay(config: &RecruiterConfig, total: usize, history: &[Message]) -> Progress {
     let min_words = bank::min_words(config.recruiter);
-    let total = bank::questions(config.recruiter, config.level).len();
     let mut p = Progress {
         question: 0,
         follow_ups: 0,
@@ -56,14 +56,18 @@ fn replay(config: &RecruiterConfig, history: &[Message]) -> Progress {
     p
 }
 
-impl InterviewEngine for DeterministicEngine {
-    fn next_turn(
-        &self,
+impl DeterministicEngine {
+    fn turn(
         config: &RecruiterConfig,
+        focus: Option<&OfferFocus>,
         history: &[Message],
     ) -> Result<NextTurn, EngineError> {
-        let bank = bank::questions(config.recruiter, config.level);
-        let p = replay(config, history);
+        let bank = focus::plan(
+            bank::questions(config.recruiter, config.level),
+            config.recruiter,
+            focus,
+        );
+        let p = replay(config, bank.len(), history);
         let Some(current) = bank.get(p.question) else {
             return Ok(NextTurn {
                 message: bank::closing(config.recruiter).to_string(),
@@ -73,7 +77,7 @@ impl InterviewEngine for DeterministicEngine {
             });
         };
         let (message, kind) = match p.last {
-            None | Some(Last::Accepted) => (current.text, TurnKind::Question),
+            None | Some(Last::Accepted) => (current.text.as_str(), TurnKind::Question),
             Some(Last::Empty) => (bank::reprompt(config.recruiter), TurnKind::Reprompt),
             Some(Last::Insufficient) => (
                 bank::follow_up(config.recruiter, p.follow_ups - 1),
@@ -83,9 +87,28 @@ impl InterviewEngine for DeterministicEngine {
         Ok(NextTurn {
             message: message.to_string(),
             kind,
-            topic: Some(current.topic.to_string()),
+            topic: Some(current.topic.clone()),
             done: false,
         })
+    }
+}
+
+impl InterviewEngine for DeterministicEngine {
+    fn next_turn(
+        &self,
+        config: &RecruiterConfig,
+        history: &[Message],
+    ) -> Result<NextTurn, EngineError> {
+        Self::turn(config, None, history)
+    }
+
+    fn next_turn_for_offer(
+        &self,
+        config: &RecruiterConfig,
+        focus: &OfferFocus,
+        history: &[Message],
+    ) -> Result<NextTurn, EngineError> {
+        Self::turn(config, Some(focus), history)
     }
 
     fn evaluate(
