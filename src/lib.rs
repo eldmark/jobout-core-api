@@ -14,6 +14,7 @@ pub mod interview;
 pub mod interview_store;
 pub mod jwt;
 pub mod login_attempts;
+pub mod matching;
 pub mod offers;
 pub mod password;
 pub mod quota;

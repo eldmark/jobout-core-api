@@ -776,11 +776,12 @@ async fn parametros_fuera_del_conjunto_dan_parametro_no_permitido() {
     e.cerrar().await;
 }
 
-/// `sort=match` (5b) y `sort` vacío son valores ilegales de un parámetro permitido.
+/// `sort` vacío o repetido son valores ilegales de un parámetro permitido (`sort=match` ya es
+/// válido desde la 5b: ver `tests/matching.rs`).
 #[tokio::test]
-async fn sort_match_o_vacio_da_datos_invalidos() {
+async fn sort_vacio_o_repetido_da_datos_invalidos() {
     let e = escena().await;
-    for q in ["sort=match", "sort=", "sort=recent&sort=oldest"] {
+    for q in ["sort=", "sort=recent&sort=oldest", "sort=match&sort=recent"] {
         let r = e.get(&format!("{OFERTAS}?{q}")).await;
         assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{q}");
         assert_eq!(codigo(&r.json), "datos_invalidos", "{q}");
@@ -807,13 +808,14 @@ async fn un_cuerpo_enorme_en_un_get_da_413() {
 
 // ================================================================== forma
 
-const CLAVES_RESUMEN: [&str; 14] = [
+const CLAVES_RESUMEN: [&str; 15] = [
     "city",
     "company",
     "confidential",
     "contract_type",
     "employment_sector",
     "id",
+    "match",
     "my_application",
     "profession",
     "publication_date",
@@ -846,7 +848,10 @@ async fn el_resumen_tiene_la_forma_del_contrato() {
     let e = escena().await;
     let id = oferta(&e.m, &e.c, datos(&e.emp, "Desarrollador backend")).await;
     let v = e.lista("").await;
-    assert_eq!(claves(&v), ["items", "next_cursor"]);
+    assert_eq!(
+        claves(&v),
+        ["items", "match_unavailable", "next_cursor", "sorted_by"]
+    );
     let o = &v["items"][0];
     assert_eq!(claves(o), esperadas(&[]));
     assert_eq!(o["id"], id);

@@ -3,8 +3,8 @@
 //! `shared_fields` son **nombres** de un conjunto cerrado, nunca valores. Los mensajes de error
 //! son textos fijos: jamás repiten lo recibido.
 
-/// Los nueve nombres del contrato, en el orden canónico en que se guardan.
-pub const FIELDS: [&str; 9] = [
+/// Los diez nombres del contrato, en el orden canónico en que se guardan.
+pub const FIELDS: [&str; 10] = [
     "display_name",
     "skills",
     "experience",
@@ -14,6 +14,7 @@ pub const FIELDS: [&str; 9] = [
     "profile_description",
     "email",
     "phone",
+    "match_score",
 ];
 
 /// Lo que siempre va: sin ello la aplicación se reduciría a un nombre.
@@ -110,8 +111,10 @@ mod tests {
     }
 
     #[test]
-    fn el_conjunto_cerrado_son_nueve_nombres_y_tres_obligatorios() {
-        assert_eq!(FIELDS.len(), 9);
+    fn el_conjunto_cerrado_son_diez_nombres_y_tres_obligatorios() {
+        assert_eq!(FIELDS.len(), 10);
+        assert!(FIELDS.contains(&"match_score"));
+        assert!(!MANDATORY.contains(&"match_score"));
         assert_eq!(MANDATORY, ["display_name", "skills", "experience"]);
         for m in MANDATORY {
             assert!(FIELDS.contains(&m));
@@ -130,7 +133,6 @@ mod tests {
             "photo",
             "transcripts",
             "interview_score",
-            "match_score",
             "plan",
             "user_id",
             "applicant_id",
@@ -210,7 +212,7 @@ mod tests {
             "display_name",
             "skills",
             "experience",
-            "match_score"
+            "interview_score"
         ])));
         invalido(con(json!([
             "display_name",

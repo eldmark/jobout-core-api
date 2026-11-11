@@ -40,6 +40,7 @@ use crate::{
     auth_user::AuthUser,
     company_gate::{self, Gate},
     company_scope::company_of,
+    matching::store as matching_store,
     offers::input::uuid_canonico,
     state::AppState,
 };
@@ -290,6 +291,17 @@ async fn detail_json<C: sea_orm::ConnectionTrait>(
             .await
             .map_err(db("panel_compartido"))?
         {
+            // El puntaje solo si la persona lo marcó, y calculado únicamente con `compartido`
+            // (lo consentido), nunca con el perfil entero.
+            let mut compartido = compartido;
+            if r.shared_fields.iter().any(|f| f == "match_score") {
+                if let Some(m) = matching_store::for_shared_view(c, &r.offer_id, &compartido)
+                    .await
+                    .map_err(db("panel_matching"))?
+                {
+                    compartido["match_score"] = m;
+                }
+            }
             v["applicant"] = compartido;
             v["shared_fields"] = json!(r.shared_fields);
         }
