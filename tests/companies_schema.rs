@@ -72,7 +72,7 @@ async fn em10_down_y_up_dejan_el_mismo_esquema() {
         assert_eq!(existe(&db, t).await, 1, "falta {t}");
     }
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(4)).await.expect("down");
+    Migrator::down(&db.conn, Some(5)).await.expect("down");
     for t in TABLAS {
         assert_eq!(existe(&db, t).await, 0, "down debe quitar {t}");
     }
