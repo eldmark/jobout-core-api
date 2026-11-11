@@ -289,6 +289,10 @@ fn blocking<T>(f: impl FnOnce() -> T) -> T {
 }
 
 impl InterviewEngine for OpenRouterEngine {
+    fn ai_replies(&self) -> bool {
+        true
+    }
+
     fn next_turn(
         &self,
         config: &RecruiterConfig,

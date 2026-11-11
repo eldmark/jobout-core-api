@@ -222,6 +222,12 @@ impl std::fmt::Display for EngineError {
 impl std::error::Error for EngineError {}
 
 pub trait InterviewEngine {
+    /// Whether a language model words what the recruiter says, i.e. the candidate's answers leave
+    /// the service. Only the OpenRouter engine says yes; the web uses it to show a privacy notice.
+    fn ai_replies(&self) -> bool {
+        false
+    }
+
     /// The next thing the recruiter says, given the conversation so far (empty history gives the
     /// opening question). Pure: the same history always gives the same turn.
     fn next_turn(

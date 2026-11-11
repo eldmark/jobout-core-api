@@ -1,5 +1,6 @@
 //! Catálogo de la entrevista (Fase 3, paso 5): `GET /api/v1/recruiters`, `GET /api/v1/levels` y
 //! `GET /api/v1/progress`.
+//! `GET /recruiters` añade `ai_replies` (JB-92): si la IA redacta de verdad, para el aviso de privacidad.
 //!
 //! Solo lectura. Nunca sale de aquí el `system_prompt` de un recruiter ni los criterios internos
 //! de la rúbrica: las consultas piden columnas por nombre, no `SELECT *`. Lo que depende de la
@@ -69,6 +70,14 @@ struct Items<T> {
     items: Vec<T>,
 }
 
+/// `GET /recruiters`: los items de siempre más `ai_replies` (JB-92).
+#[derive(Serialize)]
+struct Recruiters {
+    items: Vec<RecruiterOut>,
+    /// `true` solo si un modelo redacta al recruiter (las respuestas viajan a OpenRouter).
+    ai_replies: bool,
+}
+
 // ------------------------------------------------------------ recruiters
 
 #[derive(Serialize)]
@@ -84,7 +93,7 @@ struct RecruiterOut {
 async fn recruiters(
     State(state): State<AppState>,
     _user: AuthUser,
-) -> Result<Json<Items<RecruiterOut>>, ApiError> {
+) -> Result<Json<Recruiters>, ApiError> {
     let filas = state
         .db
         .query_all(stmt(
@@ -109,7 +118,10 @@ async fn recruiters(
         })
         .collect::<Result<Vec<_>, DbErr>>()
         .map_err(db("leer_fila_recruiter"))?;
-    Ok(Json(Items { items }))
+    Ok(Json(Recruiters {
+        items,
+        ai_replies: state.engine.ai_replies(),
+    }))
 }
 
 // ---------------------------------------------------------------- levels
