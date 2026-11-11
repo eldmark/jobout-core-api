@@ -394,8 +394,7 @@ impl<S: Send + Sync> FromRequestParts<S> for IpCliente {
     }
 }
 
-/// Una fila de `access_audit`: quién, qué, sobre qué recurso y la IP hasheada. **Sin contenido.**
-/// Si falla, falla la operación que la llama (va en su misma transacción).
+/// Una fila de `access_audit` sobre una empresa. Ver [`auditar_recurso`].
 pub async fn auditar(
     conn: &impl ConnectionTrait,
     pii: &PiiKeys,
@@ -404,13 +403,29 @@ pub async fn auditar(
     recurso: Option<&str>,
     ip: &IpCliente,
 ) -> Result<(), ApiError> {
+    auditar_recurso(conn, pii, actor, accion, "company", recurso, ip).await
+}
+
+/// Una fila de `access_audit`: quién, qué, sobre qué recurso y la IP hasheada. **Sin contenido.**
+/// Si falla, falla la operación que la llama (va en su misma transacción). `tipo` es una
+/// constante del código (`company`, `job_offer`, `job_application`), nunca un dato recibido.
+pub async fn auditar_recurso(
+    conn: &impl ConnectionTrait,
+    pii: &PiiKeys,
+    actor: &str,
+    accion: &str,
+    tipo: &'static str,
+    recurso: Option<&str>,
+    ip: &IpCliente,
+) -> Result<(), ApiError> {
     conn.execute(stmt(
         "INSERT INTO access_audit (id, actor_user_id, action, resource_type, resource_id, ip_hash) \
-         VALUES ($1::uuid, $2::uuid, $3, 'company', $4::uuid, $5)",
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6)",
         vec![
             migration::new_id().to_string().into(),
             actor.to_string().into(),
             accion.to_string().into(),
+            tipo.into(),
             recurso.map(str::to_string).into(),
             ip.0.as_deref().map(|i| pii.ip_hash(i)).into(),
         ],

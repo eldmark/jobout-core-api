@@ -12,5 +12,6 @@ pub mod interviews;
 pub mod me;
 pub mod offers;
 pub mod offers_public;
+pub mod panel;
 pub mod profile;
 pub mod table;

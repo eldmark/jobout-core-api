@@ -21,7 +21,11 @@ async fn empresa(db: &TestDb, tag: &str) -> uuid::Uuid {
     id
 }
 
-async fn favorito(db: &TestDb, company: uuid::Uuid, applicant: uuid::Uuid) -> Result<(), sea_orm::DbErr> {
+async fn favorito(
+    db: &TestDb,
+    company: uuid::Uuid,
+    applicant: uuid::Uuid,
+) -> Result<(), sea_orm::DbErr> {
     db.exec(&format!(
         "INSERT INTO company_favorite_applicants (id, company_id, applicant_id) \
          VALUES (gen_random_uuid(), '{company}', '{applicant}')"
@@ -39,7 +43,10 @@ async fn un_favorito_por_empresa_y_persona() {
     favorito(&db, c1, ap).await.unwrap();
     favorito(&db, c2, ap).await.unwrap();
     let e = error_de(favorito(&db, c1, ap).await);
-    assert!(e.contains("company_favorite_applicants_company_applicant_key"), "{e}");
+    assert!(
+        e.contains("company_favorite_applicants_company_applicant_key"),
+        "{e}"
+    );
     db.cleanup().await;
 }
 
@@ -58,14 +65,16 @@ async fn los_favoritos_caen_con_la_persona_y_con_la_empresa() {
         .await
         .unwrap();
     assert_eq!(
-        db.count("SELECT count(*) FROM company_favorite_applicants").await,
+        db.count("SELECT count(*) FROM company_favorite_applicants")
+            .await,
         2
     );
     db.exec(&format!("DELETE FROM companies WHERE id = '{c1}'"))
         .await
         .unwrap();
     assert_eq!(
-        db.count("SELECT count(*) FROM company_favorite_applicants").await,
+        db.count("SELECT count(*) FROM company_favorite_applicants")
+            .await,
         1
     );
     db.cleanup().await;

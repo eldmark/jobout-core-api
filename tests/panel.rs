@@ -336,7 +336,13 @@ async fn pa2_la_lista_solo_trae_el_nombre_visible() {
 #[tokio::test]
 async fn pa3_el_detalle_trae_solo_lo_compartido() {
     let e = escenario().await;
-    let a = aplicar(&e, &e.ana, &e.oferta, &["display_name", "skills", "experience", "email"]).await;
+    let a = aplicar(
+        &e,
+        &e.ana,
+        &e.oferta,
+        &["display_name", "skills", "experience", "email"],
+    )
+    .await;
     let r = e.m.get(&detalle_de(&a), &e.rec).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     let v = &r.json;
@@ -373,9 +379,8 @@ async fn pa3_el_detalle_trae_solo_lo_compartido() {
     assert_eq!(h[0]["from"], Value::Null);
     assert_eq!(h[0]["to"], "applied");
     assert_eq!(h[0]["note"], Value::Null);
-    let ap_id = e
-        .m
-        .texto(&format!(
+    let ap_id =
+        e.m.texto(&format!(
             "SELECT id::text FROM applicants WHERE user_id = '{}'",
             e.ana.id
         ))
@@ -463,12 +468,23 @@ async fn el_cuerpo_del_cambio_de_estado_es_cerrado() {
     ] {
         for id in [a.as_str(), ID_NO] {
             let r = mover(&e, &e.rec, id, cuerpo.clone()).await;
-            assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{cuerpo}: {}", r.text);
+            assert_eq!(
+                r.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{cuerpo}: {}",
+                r.text
+            );
             assert_eq!(codigo(&r), error, "{cuerpo}");
         }
     }
     // 500 caracteres exactos sí.
-    let r = mover(&e, &e.rec, &a, json!({"to": "under_review", "note": "é".repeat(500)})).await;
+    let r = mover(
+        &e,
+        &e.rec,
+        &a,
+        json!({"to": "under_review", "note": "é".repeat(500)}),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     e.m.db.cleanup().await;
 }
@@ -478,7 +494,13 @@ async fn el_cuerpo_del_cambio_de_estado_es_cerrado() {
 async fn la_nota_se_guarda_cifrada_y_solo_la_ve_el_panel() {
     let e = escenario().await;
     let a = aplicar(&e, &e.ana, &e.oferta, &MINIMO).await;
-    let r = mover(&e, &e.rec, &a, json!({"to": "under_review", "note": SECRETO_NOTA})).await;
+    let r = mover(
+        &e,
+        &e.rec,
+        &a,
+        json!({"to": "under_review", "note": SECRETO_NOTA}),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     assert_eq!(r.json["history"][1]["note"], SECRETO_NOTA);
 
@@ -492,7 +514,9 @@ async fn la_nota_se_guarda_cifrada_y_solo_la_ve_el_panel() {
     assert!(!common::contiene(&crudo, SECRETO_NOTA.as_bytes()));
     assert_eq!(pii().decrypt(&crudo).unwrap(), SECRETO_NOTA);
 
-    let mia = e.m.get(&format!("/api/v1/me/applications/{a}"), &e.ana).await;
+    let mia =
+        e.m.get(&format!("/api/v1/me/applications/{a}"), &e.ana)
+            .await;
     assert_eq!(mia.status, StatusCode::OK);
     assert!(!mia.text.contains(SECRETO_NOTA));
     // Otra empresa no la ve: ni siquiera ve la aplicación.
@@ -542,7 +566,10 @@ async fn pa6_pa7_favoritos_por_empresa_y_persona() {
         1
     );
     let r = e.m.get(&detalle_de(&a2), &e.rec).await;
-    assert_eq!(r.json["is_favorite"], true, "vale para la persona en la empresa");
+    assert_eq!(
+        r.json["is_favorite"], true,
+        "vale para la persona en la empresa"
+    );
     let r = lista(&e, &e.rec, &e.oferta, "favorite=true").await;
     assert_eq!(ids(&r), vec![a1.clone()]);
     let r = lista(&e, &e.rec, &e.oferta, "favorite=false").await;
@@ -592,7 +619,10 @@ async fn retirar_borra_el_favorito_si_no_queda_otra_viva() {
     let otra_mia = oferta_sql(&e.m, &e.emp, "Mesero", false).await;
     let a1 = aplicar(&e, &e.ana, &e.oferta, &MINIMO).await;
     let a2 = aplicar(&e, &e.ana, &otra_mia, &MINIMO).await;
-    assert_eq!(favorito(&e, &e.rec, "PUT", &a1).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        favorito(&e, &e.rec, "PUT", &a1).await.status,
+        StatusCode::NO_CONTENT
+    );
     retirar(&e, &e.ana, &a1).await;
     assert_eq!(
         e.m.n("SELECT count(*) FROM company_favorite_applicants")
@@ -612,18 +642,17 @@ async fn retirar_borra_el_favorito_si_no_queda_otra_viva() {
 // ------------------------------------------------------------------ PA8
 
 async fn auditoria(e: &Esc) -> Vec<(String, String, String, String)> {
-    let filas = e
-        .m
-        .db
-        .conn
-        .query_all(sea_orm::Statement::from_string(
-            sea_orm::DbBackend::Postgres,
-            "SELECT action, resource_type, resource_id::text, actor_user_id::text \
+    let filas =
+        e.m.db
+            .conn
+            .query_all(sea_orm::Statement::from_string(
+                sea_orm::DbBackend::Postgres,
+                "SELECT action, resource_type, resource_id::text, actor_user_id::text \
              FROM access_audit ORDER BY created_at, id"
-                .to_string(),
-        ))
-        .await
-        .unwrap();
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
     filas
         .iter()
         .map(|f| {
@@ -654,20 +683,43 @@ async fn pa8_cada_acceso_deja_su_fila_de_auditoria() {
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
-    assert_eq!(e.m.get(&detalle_de(&a), &e.rec).await.status, StatusCode::OK);
     assert_eq!(
-        mover(&e, &e.rec, &a, json!({"to": "under_review"})).await.status,
+        e.m.get(&detalle_de(&a), &e.rec).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        mover(&e, &e.rec, &a, json!({"to": "under_review"}))
+            .await
+            .status,
         StatusCode::OK
     );
     // Favoritos no devuelven datos de la persona: no se auditan.
-    assert_eq!(favorito(&e, &e.rec, "PUT", &a).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        favorito(&e, &e.rec, "PUT", &a).await.status,
+        StatusCode::NO_CONTENT
+    );
     let rec = e.rec.id.clone();
     assert_eq!(
         auditoria(&e).await,
         vec![
-            ("application.list".into(), "job_offer".into(), e.oferta.clone(), rec.clone()),
-            ("application.view".into(), "job_application".into(), a.clone(), rec.clone()),
-            ("application.review".into(), "job_application".into(), a.clone(), rec.clone()),
+            (
+                "application.list".into(),
+                "job_offer".into(),
+                e.oferta.clone(),
+                rec.clone()
+            ),
+            (
+                "application.view".into(),
+                "job_application".into(),
+                a.clone(),
+                rec.clone()
+            ),
+            (
+                "application.review".into(),
+                "job_application".into(),
+                a.clone(),
+                rec.clone()
+            ),
         ]
     );
     let ip = common::bytes_de(
@@ -687,7 +739,13 @@ async fn pa8_cada_acceso_deja_su_fila_de_auditoria() {
 #[tokio::test]
 async fn sin_auditoria_no_hay_dato() {
     let e = escenario().await;
-    let a = aplicar(&e, &e.ana, &e.oferta, &["display_name", "skills", "experience", "email"]).await;
+    let a = aplicar(
+        &e,
+        &e.ana,
+        &e.oferta,
+        &["display_name", "skills", "experience", "email"],
+    )
+    .await;
     e.m.db
         .exec(
             "CREATE FUNCTION auditoria_rota() RETURNS trigger AS $$ \
@@ -747,7 +805,12 @@ async fn pa9_parametros_fuera_del_conjunto() {
         "limit=5&gender=f",
     ] {
         let r = lista(&e, &e.rec, &e.oferta, q).await;
-        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{q}: {}", r.text);
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{q}: {}",
+            r.text
+        );
         assert_eq!(codigo(&r), "parametro_no_permitido", "{q}");
         for trozo in q.split(['&', '=']) {
             if trozo.len() > 3 && trozo != "limit" {
@@ -766,7 +829,12 @@ async fn pa9_parametros_fuera_del_conjunto() {
         "status=applied&status=hired",
     ] {
         let r = lista(&e, &e.rec, &e.oferta, q).await;
-        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{q}: {}", r.text);
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{q}: {}",
+            r.text
+        );
         assert_eq!(codigo(&r), "datos_invalidos", "{q}");
     }
     // Los parámetros se validan antes que el 404.
@@ -798,14 +866,26 @@ async fn orden_filtros_y_paginacion() {
     let mut recientes = todas.clone();
     recientes.reverse();
     assert_eq!(ids(&lista(&e, &e.rec, &e.oferta, "").await), recientes);
-    assert_eq!(ids(&lista(&e, &e.rec, &e.oferta, "sort=recent").await), recientes);
-    assert_eq!(ids(&lista(&e, &e.rec, &e.oferta, "sort=oldest").await), todas);
+    assert_eq!(
+        ids(&lista(&e, &e.rec, &e.oferta, "sort=recent").await),
+        recientes
+    );
+    assert_eq!(
+        ids(&lista(&e, &e.rec, &e.oferta, "sort=oldest").await),
+        todas
+    );
 
     for (sort, esperado) in [("recent", &recientes), ("oldest", &todas)] {
         let mut vistas = Vec::new();
         let mut cursor = String::new();
         loop {
-            let r = lista(&e, &e.rec, &e.oferta, &format!("sort={sort}&limit=3{cursor}")).await;
+            let r = lista(
+                &e,
+                &e.rec,
+                &e.oferta,
+                &format!("sort={sort}&limit=3{cursor}"),
+            )
+            .await;
             assert_eq!(r.status, StatusCode::OK, "{}", r.text);
             vistas.extend(ids(&r));
             match r.json["next_cursor"].as_str() {
@@ -817,7 +897,9 @@ async fn orden_filtros_y_paginacion() {
     }
 
     assert_eq!(
-        mover(&e, &e.rec, &todas[1], json!({"to": "under_review"})).await.status,
+        mover(&e, &e.rec, &todas[1], json!({"to": "under_review"}))
+            .await
+            .status,
         StatusCode::OK
     );
     assert_eq!(
@@ -838,9 +920,23 @@ async fn orden_filtros_y_paginacion() {
 #[tokio::test]
 async fn pa10_el_candidato_eliminado_queda_anonimo() {
     let e = escenario().await;
-    let a = aplicar(&e, &e.ana, &e.oferta, &["display_name", "skills", "experience", "email"]).await;
-    assert_eq!(mover(&e, &e.rec, &a, json!({"to": "under_review"})).await.status, StatusCode::OK);
-    assert_eq!(favorito(&e, &e.rec, "PUT", &a).await.status, StatusCode::NO_CONTENT);
+    let a = aplicar(
+        &e,
+        &e.ana,
+        &e.oferta,
+        &["display_name", "skills", "experience", "email"],
+    )
+    .await;
+    assert_eq!(
+        mover(&e, &e.rec, &a, json!({"to": "under_review"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        favorito(&e, &e.rec, "PUT", &a).await.status,
+        StatusCode::NO_CONTENT
+    );
     let r =
         e.m.enviar(
             "DELETE",
@@ -1046,13 +1142,26 @@ async fn nada_del_panel_llega_al_log() {
         &e,
         &e.ana,
         &e.oferta,
-        &["display_name", "skills", "experience", "email", "phone", "profile_description"],
+        &[
+            "display_name",
+            "skills",
+            "experience",
+            "email",
+            "phone",
+            "profile_description",
+        ],
     )
     .await;
     let (registro, _guarda) = capturar_log();
     lista(&e, &e.rec, &e.oferta, "").await;
     e.m.get(&detalle_de(&a), &e.rec).await;
-    mover(&e, &e.rec, &a, json!({"to": "under_review", "note": SECRETO_NOTA})).await;
+    mover(
+        &e,
+        &e.rec,
+        &a,
+        json!({"to": "under_review", "note": SECRETO_NOTA}),
+    )
+    .await;
     mover(&e, &e.rec, &a, json!({"to": "hired", "note": SECRETO_NOTA})).await;
     favorito(&e, &e.rec, "PUT", &a).await;
     let log = registro.texto();
@@ -1076,8 +1185,14 @@ async fn cualquier_reclutador_de_la_empresa_ve_el_panel() {
     let e = escenario().await;
     let a = aplicar(&e, &e.ana, &e.oferta, &MINIMO).await;
     let colega = reclutador_sql(&e.m, "colega", &e.emp).await;
-    assert_eq!(ids(&lista(&e, &colega, &e.oferta, "").await), vec![a.clone()]);
-    assert_eq!(e.m.get(&detalle_de(&a), &colega).await.status, StatusCode::OK);
+    assert_eq!(
+        ids(&lista(&e, &colega, &e.oferta, "").await),
+        vec![a.clone()]
+    );
+    assert_eq!(
+        e.m.get(&detalle_de(&a), &colega).await.status,
+        StatusCode::OK
+    );
     let _ = &e.emp2;
     e.m.db.cleanup().await;
 }
