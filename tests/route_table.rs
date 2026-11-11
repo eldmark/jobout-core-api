@@ -180,6 +180,26 @@ fn t7_las_rutas_declaradas_son_las_esperadas() {
         ("/api/v1/me/applications/{id}/withdraw", false, None),
         ("/api/v1/me/external-applications", false, None),
         ("/api/v1/me/external-applications/{id}", false, None),
+        (
+            "/api/v1/company/offers/{id}/applications",
+            false,
+            Some("application.read"),
+        ),
+        (
+            "/api/v1/company/applications/{id}",
+            false,
+            Some("application.read"),
+        ),
+        (
+            "/api/v1/company/applications/{id}/status",
+            false,
+            Some("application.review"),
+        ),
+        (
+            "/api/v1/company/applications/{id}/favorite",
+            false,
+            Some("favorite.manage"),
+        ),
     ]
     .into_iter()
     .map(|(p, publica, permiso)| (p.to_string(), publica, permiso.map(str::to_string)))

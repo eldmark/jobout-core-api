@@ -11,15 +11,15 @@ use super::{availability, Availability, Status};
 use crate::company_gate::VISIBLE_COMPANY_SQL;
 use crate::crypto::PiiKeys;
 
-fn stmt(sql: &str, valores: Vec<Value>) -> Statement {
+pub(super) fn stmt(sql: &str, valores: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DbBackend::Postgres, sql, valores)
 }
 
-fn col<T: sea_orm::TryGetable>(r: &QueryResult, i: usize) -> Result<T, DbErr> {
+pub(super) fn col<T: sea_orm::TryGetable>(r: &QueryResult, i: usize) -> Result<T, DbErr> {
     r.try_get_by_index(i)
 }
 
-fn iso(c: &str) -> String {
+pub(super) fn iso(c: &str) -> String {
     format!("to_char({c} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")
 }
 
@@ -405,8 +405,7 @@ pub async fn shared_view<C: ConnectionTrait>(
             "display_name" => {
                 let nombre: String = col(&persona, 0)?;
                 let apellido: String = col(&persona, 1)?;
-                let inicial: String = apellido.chars().take(1).collect();
-                v.insert(campo.into(), json!(format!("{nombre} {inicial}.")));
+                v.insert(campo.into(), json!(super::display_name(&nombre, &apellido)));
             }
             "skills" => {
                 let filas = db

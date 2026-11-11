@@ -16,6 +16,7 @@ mod m20261110_000001_create_offer_catalogs;
 mod m20261110_000002_create_companies;
 mod m20261110_000003_create_job_offers;
 mod m20261110_000004_create_applications;
+mod m20261111_000001_create_company_favorites;
 pub mod offer_seeds;
 pub mod seeds;
 
@@ -45,6 +46,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261110_000002_create_companies::Migration),
             Box::new(m20261110_000003_create_job_offers::Migration),
             Box::new(m20261110_000004_create_applications::Migration),
+            Box::new(m20261111_000001_create_company_favorites::Migration),
         ]
     }
 }

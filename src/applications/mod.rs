@@ -3,17 +3,19 @@
 //! - `input`: el cuerpo de «aplicar» (consentimiento y `shared_fields`, conjunto cerrado).
 //! - `external`: el registro privado de aplicaciones hechas fuera de la plataforma (HU-32).
 //! - `store`: el SQL.
+//! - `panel`: el SQL del panel del reclutador (paso 7).
 //! - Aquí: la máquina de estados, la disponibilidad (retención de 90 días) y `move_status`, la
 //!   única función que cambia el estado de una aplicación (la persona al retirar; el panel del
-//!   reclutador del paso 7 la usará tal cual).
+//!   reclutador del paso 7 la usa dentro de su transacción, junto con la auditoría).
 //!
 //! Contrato: `api.md`, «Aplicar, ver y retirar (candidato)».
 
 pub mod external;
 pub mod input;
+pub mod panel;
 pub mod store;
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement, TransactionTrait};
+use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement, TransactionTrait};
 
 use crate::crypto::PiiKeys;
 
@@ -53,6 +55,18 @@ impl Status {
 
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|e| e.as_str() == s)
+    }
+}
+
+/// Cómo ve el reclutador el nombre de la persona: nombre y la inicial del primer apellido
+/// («Ana P.»). Nunca el segundo apellido ni el de casada.
+pub fn display_name(first_name: &str, last_name: &str) -> String {
+    let inicial: String = last_name.trim().chars().take(1).collect();
+    let nombre = first_name.trim();
+    if inicial.is_empty() {
+        nombre.to_string()
+    } else {
+        format!("{nombre} {inicial}.")
     }
 }
 
@@ -152,9 +166,13 @@ pub enum MoveError {
 
 /// Cambia el estado de una aplicación en **una transacción**: bloquea la fila, valida la
 /// máquina, actualiza con `WHERE status = <de>`, escribe el evento y, al pasar a `shortlisted`
-/// una oferta confidencial, fija `company_revealed_at`.
-pub async fn move_status(
-    db: &DatabaseConnection,
+/// una oferta confidencial, fija `company_revealed_at`. Al retirar, borra el favorito de la
+/// empresa sobre la persona si no le queda otra aplicación viva en ella.
+///
+/// Acepta una conexión o una transacción abierta (entonces trabaja en un punto de guardado): el
+/// panel la llama dentro de la suya para que el cambio y su fila de auditoría vayan juntos.
+pub async fn move_status<C: ConnectionTrait + TransactionTrait>(
+    db: &C,
     pii: &PiiKeys,
     scope: Scope<'_>,
     application_id: &str,
@@ -247,6 +265,7 @@ pub async fn move_status(
     if n != 1 {
         return Err(MoveError::Invalid(de));
     }
+    let id_fila = id.clone();
     txn.execute(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "INSERT INTO job_application_events \
@@ -264,6 +283,16 @@ pub async fn move_status(
     ))
     .await
     .map_err(MoveError::Db)?;
+    if to == Status::Withdrawn {
+        // «Viva» es lo que todavía se puede retirar: `applied`, `under_review` o `shortlisted`.
+        txn.execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "DELETE FROM company_favorite_applicants f              USING job_applications a JOIN job_offers o ON o.id = a.job_offer_id              WHERE a.id = $1::uuid AND f.company_id = o.company_id                AND f.applicant_id = a.applicant_id                AND NOT EXISTS (                    SELECT 1 FROM job_applications a2 JOIN job_offers o2 ON o2.id = a2.job_offer_id                    WHERE a2.applicant_id = a.applicant_id AND o2.company_id = o.company_id                      AND a2.id <> a.id                      AND a2.status IN ('applied', 'under_review', 'shortlisted'))",
+            vec![id_fila.into()],
+        ))
+        .await
+        .map_err(MoveError::Db)?;
+    }
     txn.commit().await.map_err(MoveError::Db)?;
     Ok(Moved {
         from: de,
@@ -280,6 +309,15 @@ mod tests {
     use Status::*;
 
     const DIA: i64 = 86_400 * 1_000_000;
+
+    #[test]
+    fn el_nombre_visible_es_nombre_e_inicial() {
+        assert_eq!(display_name("Ana", "Prueba"), "Ana P.");
+        assert_eq!(display_name(" Ana ", " prueba"), "Ana p.");
+        assert_eq!(display_name("Ana", "Ñúñez"), "Ana Ñ.");
+        assert_eq!(display_name("Ana", ""), "Ana");
+        assert_eq!(display_name("Ana", "   "), "Ana");
+    }
 
     #[test]
     fn los_estados_van_y_vienen_como_texto() {
