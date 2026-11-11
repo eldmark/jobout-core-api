@@ -581,6 +581,8 @@ async fn t5_solo_las_sesiones_en_curso_aceptan_turnos() {
 async fn t6_ocho_turnos_simultaneos_gana_uno() {
     let motor = MotorConCompuerta::nuevo();
     let w = mundo_con(Arc::new(ViaCompuerta(motor.clone()))).await;
+    // Creating the session also asks the engine for the opening (JB-88): it is not a turn.
+    let previas = motor.entradas();
 
     let mut tareas = tokio::task::JoinSet::new();
     for i in 0..8 {
@@ -625,7 +627,11 @@ async fn t6_ocho_turnos_simultaneos_gana_uno() {
         .filter(|(e, c)| *e == StatusCode::CONFLICT && c == "turno_en_proceso")
         .count();
     assert_eq!((ganadores, ocupados), (1, 7), "{resultados:?}");
-    assert_eq!(motor.entradas(), 1, "solo el ganador llegó al motor");
+    assert_eq!(
+        motor.entradas() - previas,
+        1,
+        "solo el ganador llegó al motor"
+    );
     assert_eq!(n_turnos(&w.db, w.sesion).await, 3);
     assert_eq!(
         w.db.count(&format!(

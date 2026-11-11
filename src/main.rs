@@ -32,7 +32,10 @@ async fn main() -> Result<()> {
         pii: Arc::new(pii),
         jwt: Arc::new(jwt),
         blobs: Arc::new(blobs),
-        engine: jobout_core_api::interview::default_engine(),
+        // AI wording of the recruiter only when AI_REPLIES_ENABLED and a key are set (JB-88).
+        engine: jobout_core_api::interview::openrouter::engine_from_lookup(|name| {
+            std::env::var(name).ok()
+        }),
     };
 
     let port: u16 = std::env::var("PORT")
