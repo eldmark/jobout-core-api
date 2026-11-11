@@ -118,7 +118,12 @@ async fn columnas_de_autoria(m: &Mundo) -> Vec<(String, String)> {
         .await
         .unwrap()
         .iter()
-        .map(|f| (f.try_get_by_index(0).unwrap(), f.try_get_by_index(1).unwrap()))
+        .map(|f| {
+            (
+                f.try_get_by_index(0).unwrap(),
+                f.try_get_by_index(1).unwrap(),
+            )
+        })
         .collect()
 }
 
@@ -132,8 +137,11 @@ async fn bo3_las_decisiones_del_reclutador_quedan_anonimas() {
     assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text);
 
     assert_eq!(
-        e.m.n(&format!("SELECT count(*) FROM users WHERE id = '{}'", e.rec.id))
-            .await,
+        e.m.n(&format!(
+            "SELECT count(*) FROM users WHERE id = '{}'",
+            e.rec.id
+        ))
+        .await,
         0
     );
     assert_eq!(
@@ -172,27 +180,24 @@ async fn bo3_las_decisiones_del_reclutador_quedan_anonimas() {
         .await,
         1
     );
-    let r = e
-        .m
-        .get(&format!("/api/v1/company/offers/{}", e.oferta), &e.admin)
-        .await;
+    let r =
+        e.m.get(&format!("/api/v1/company/offers/{}", e.oferta), &e.admin)
+            .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     assert_eq!(r.json["created_by"], serde_json::Value::Null);
     // El panel de la empresa sigue entero; el historial no dice quién decidió.
-    let r = e
-        .m
-        .get(&format!("/api/v1/company/applications/{}", e.app), &e.admin)
-        .await;
+    let r =
+        e.m.get(&format!("/api/v1/company/applications/{}", e.app), &e.admin)
+            .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     assert_eq!(r.json["status"], "under_review");
     assert_eq!(r.json["history"][1]["note"], NOTA);
     assert!(!r.text.contains(&e.rec.id));
     assert!(!r.text.contains(&e.rec.email));
     // La persona que aplicó no pierde nada.
-    let r = e
-        .m
-        .get(&format!("/api/v1/me/applications/{}", e.app), &e.ana)
-        .await;
+    let r =
+        e.m.get(&format!("/api/v1/me/applications/{}", e.app), &e.ana)
+            .await;
     assert_eq!(r.status, StatusCode::OK);
     e.m.db.cleanup().await;
 }
@@ -209,9 +214,8 @@ async fn bo3_ninguna_columna_de_autoria_conserva_su_id() {
             .status,
         StatusCode::OK
     );
-    let antes = e
-        .m
-        .n(&format!(
+    let antes =
+        e.m.n(&format!(
             "SELECT count(*) FROM access_audit WHERE actor_user_id = '{}'",
             e.rec.id
         ))
@@ -223,9 +227,8 @@ async fn bo3_ninguna_columna_de_autoria_conserva_su_id() {
     let columnas = columnas_de_autoria(&e.m).await;
     assert!(columnas.len() > 5, "{columnas:?}");
     for (tabla, col) in &columnas {
-        let n = e
-            .m
-            .n(&format!(
+        let n =
+            e.m.n(&format!(
                 "SELECT count(*) FROM \"{tabla}\" WHERE \"{col}\" = '{}'",
                 e.rec.id
             ))
@@ -246,9 +249,8 @@ async fn bo3_ninguna_columna_de_autoria_conserva_su_id() {
 async fn bo3_un_administrador_que_no_es_el_unico_se_va_sin_dejar_su_id() {
     let e = escenario().await;
     let otro = e.m.miembro(&e.admin, "otro-admin", "company_admin").await;
-    let r = e
-        .m
-        .enviar(
+    let r =
+        e.m.enviar(
             "PUT",
             "/api/v1/company",
             Some(&e.admin.token),
@@ -259,14 +261,16 @@ async fn bo3_un_administrador_que_no_es_el_unico_se_va_sin_dejar_su_id() {
     let r = borrar(&e.m, &e.admin).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text);
     for (tabla, col) in columnas_de_autoria(&e.m).await {
-        let n = e
-            .m
-            .n(&format!(
+        let n =
+            e.m.n(&format!(
                 "SELECT count(*) FROM \"{tabla}\" WHERE \"{col}\" = '{}'",
                 e.admin.id
             ))
             .await;
-        assert_eq!(n, 0, "{tabla}.{col} conserva el id del administrador borrado");
+        assert_eq!(
+            n, 0,
+            "{tabla}.{col} conserva el id del administrador borrado"
+        );
     }
     // La empresa sigue con su otro administrador.
     let r = e.m.get("/api/v1/company", &otro).await;
@@ -278,25 +282,23 @@ async fn bo3_un_administrador_que_no_es_el_unico_se_va_sin_dejar_su_id() {
 #[tokio::test]
 async fn bo4_la_constancia_no_tiene_datos_personales() {
     let e = escenario().await;
+    assert_eq!(borrar(&e.m, &e.rec).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(e.m.n("SELECT count(*) FROM privacy_events").await, 1);
     assert_eq!(
-        borrar(&e.m, &e.rec).await.status,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        e.m.n("SELECT count(*) FROM privacy_events").await,
+        e.m.n(
+            "SELECT count(*) FROM privacy_events WHERE kind = 'account_deleted' AND notes IS NULL"
+        )
+        .await,
         1
     );
-    assert_eq!(
-        e.m.n("SELECT count(*) FROM privacy_events WHERE kind = 'account_deleted' AND notes IS NULL")
-            .await,
-        1
-    );
-    let fila = e
-        .m
-        .texto("SELECT row_to_json(p)::text FROM privacy_events p")
-        .await;
+    let fila =
+        e.m.texto("SELECT row_to_json(p)::text FROM privacy_events p")
+            .await;
     for prohibido in [e.rec.id.as_str(), e.rec.email.as_str(), "Ana", "Prueba"] {
-        assert!(!fila.contains(prohibido), "la constancia trae {prohibido:?}");
+        assert!(
+            !fila.contains(prohibido),
+            "la constancia trae {prohibido:?}"
+        );
     }
     e.m.db.cleanup().await;
 }
@@ -309,8 +311,11 @@ async fn el_unico_administrador_no_se_borra() {
     assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text);
     assert_eq!(r.json["error"], "ultimo_administrador");
     assert_eq!(
-        e.m.n(&format!("SELECT count(*) FROM users WHERE id = '{}'", e.admin.id))
-            .await,
+        e.m.n(&format!(
+            "SELECT count(*) FROM users WHERE id = '{}'",
+            e.admin.id
+        ))
+        .await,
         1
     );
     assert_eq!(e.m.n("SELECT count(*) FROM privacy_events").await, 0);
