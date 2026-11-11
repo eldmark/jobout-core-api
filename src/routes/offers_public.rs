@@ -9,6 +9,8 @@
 //! - Una oferta confidencial no lee ni una columna de la empresa: `company` es `null`.
 //! - Nunca sale `created_by`, el estado, los contadores ni nada del reclutador. Cada petición hace
 //!   una sola consulta de datos (sin N+1): el JSON se arma en SQL.
+//! - `match`: el puntaje de **quien llama** contra cada oferta, calculado al leer con su propio
+//!   perfil (`matching`); `sort=match` ordena por él. Nunca el de otra persona.
 //! - Mirar no escribe nada.
 
 use axum::{
@@ -20,6 +22,8 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use std::collections::HashMap;
+
 use sea_orm::{ConnectionTrait, DbErr};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -29,7 +33,11 @@ use super::{
     table::{Access, RouteSpec},
 };
 use crate::{
-    auth_user::AuthUser, company_gate::VISIBLE_COMPANY_SQL, offers::input, state::AppState,
+    auth_user::AuthUser,
+    company_gate::VISIBLE_COMPANY_SQL,
+    matching::{self, store as matching_store},
+    offers::input,
+    state::AppState,
 };
 
 /// Los únicos parámetros de `GET /offers`.
@@ -199,6 +207,8 @@ fn visible_sql() -> String {
 enum Orden {
     Reciente,
     Antiguo,
+    /// Por el puntaje de quien llama (`sort=match`).
+    Puntaje,
 }
 
 impl Orden {
@@ -206,30 +216,58 @@ impl Orden {
         match self {
             Self::Reciente => 'r',
             Self::Antiguo => 'o',
+            Self::Puntaje => 'm',
+        }
+    }
+
+    /// Lo que dice `sorted_by` en la respuesta.
+    fn nombre(self) -> &'static str {
+        match self {
+            Self::Reciente => "recent",
+            Self::Antiguo => "oldest",
+            Self::Puntaje => "match",
         }
     }
 }
 
-fn codificar_cursor(orden: Orden, fecha: &str, id: &str) -> String {
-    URL_SAFE_NO_PAD.encode(format!("{}|{fecha}|{id}", orden.marca()))
+/// Dónde quedó la página anterior: `(puntaje si el orden es `match`, fecha, id)`.
+type Marca = (Option<u8>, String, String);
+
+fn codificar_cursor(orden: Orden, puntaje: u8, fecha: &str, id: &str) -> String {
+    let texto = match orden {
+        Orden::Puntaje => format!("m|{puntaje}|{fecha}|{id}"),
+        _ => format!("{}|{fecha}|{id}", orden.marca()),
+    };
+    URL_SAFE_NO_PAD.encode(texto)
 }
 
 /// Un cursor solo sirve para el orden con el que se emitió.
-fn decodificar_cursor(c: &str, orden: Orden) -> Option<(String, String)> {
+fn decodificar_cursor(c: &str, orden: Orden) -> Option<Marca> {
     let texto = String::from_utf8(URL_SAFE_NO_PAD.decode(c).ok()?).ok()?;
     let mut partes = texto.split('|');
-    let (marca, fecha, id) = (partes.next()?, partes.next()?, partes.next()?);
-    if partes.next().is_some() || marca != orden.marca().to_string() {
+    if partes.next()? != orden.marca().to_string() {
+        return None;
+    }
+    let puntaje = match orden {
+        Orden::Puntaje => Some(partes.next()?.parse::<u8>().ok().filter(|p| *p <= 100)?),
+        _ => None,
+    };
+    let (fecha, id) = (partes.next()?, partes.next()?);
+    if partes.next().is_some() {
         return None;
     }
     input::fecha(fecha)?;
-    Some((fecha.to_string(), Uuid::parse_str(id).ok()?.to_string()))
+    Some((
+        puntaje,
+        fecha.to_string(),
+        Uuid::parse_str(id).ok()?.to_string(),
+    ))
 }
 
 struct Consulta {
     limite: i64,
     orden: Orden,
-    cursor: Option<(String, String)>,
+    cursor: Option<Marca>,
     /// `(columna, id)` de los filtros presentes.
     filtros: Vec<(&'static str, String)>,
 }
@@ -240,8 +278,9 @@ fn leer_consulta(raw: Option<&str>) -> Result<Consulta, ApiError> {
     let orden = match q.get("sort").map(String::as_str) {
         None | Some("recent") => Orden::Reciente,
         Some("oldest") => Orden::Antiguo,
-        // `sort=match` es de la 5b y un `sort` vacío está mal escrito: valores ilegales.
-        Some("") | Some("match") => return Err(ApiError::Invalid("El orden pedido no existe.")),
+        Some("match") => Orden::Puntaje,
+        // Un `sort` vacío está mal escrito: valor ilegal.
+        Some("") => return Err(ApiError::Invalid("El orden pedido no existe.")),
         // Cualquier otro criterio (nombre, empresa, edad...) no existe: no se ordena por él.
         Some(_) => return Err(ApiError::ParamNotAllowed),
     };
@@ -276,6 +315,20 @@ fn json_de(texto: String) -> Result<Value, DbErr> {
 
 // ------------------------------------------------------------------ rutas
 
+/// Le pone a cada oferta el `match` de quien llama (puntaje y desglose).
+fn poner_match(items: &mut [Value], puntajes: &HashMap<String, matching_store::Scored>) {
+    for item in items {
+        let Some(id) = item["id"].as_str() else {
+            continue;
+        };
+        item["match"] = puntajes.get(id).map_or(Value::Null, |p| p.json.clone());
+    }
+}
+
+fn fallo_lectura(e: DbErr) -> Fallo {
+    Fallo::from(db("leer_ofertas")(e))
+}
+
 /// `GET /offers`. Orden: 401 → 403 cuenta → 413 → 422 de la consulta → 200.
 async fn list(
     State(s): State<AppState>,
@@ -284,21 +337,66 @@ async fn list(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Fallo> {
     cuerpo(body)?;
-    let q = leer_consulta(raw.as_deref()).map_err(Fallo::from)?;
-    let (cmp, dir) = match q.orden {
-        Orden::Reciente => ("<", "DESC"),
-        Orden::Antiguo => (">", "ASC"),
+    let mut q = leer_consulta(raw.as_deref()).map_err(Fallo::from)?;
+    let malo = || Fallo::from(ApiError::Invalid("La paginación no es válida."));
+
+    // El perfil es **de quien llama**: de ahí sale todo `match` de esta respuesta.
+    let (perfil, hoy) = matching_store::viewer(&s.db, &user.id)
+        .await
+        .map_err(fallo_lectura)?;
+
+    // Sin perfil no hay con qué ordenar por puntaje: se ordena por fecha y se dice.
+    let mut no_disponible = Value::Null;
+    if q.orden == Orden::Puntaje && perfil.is_empty() {
+        if q.cursor.is_some() {
+            return Err(malo());
+        }
+        q.orden = Orden::Reciente;
+        no_disponible = json!("perfil_vacio");
+    }
+
+    let (items, siguiente) = if q.orden == Orden::Puntaje {
+        por_puntaje(&s, &user, &q, &perfil, hoy).await?
+    } else {
+        por_fecha(&s, &user, &q, &perfil, hoy).await?
     };
-    let mut valores: Vec<sea_orm::Value> = vec![
-        q.cursor.as_ref().map(|c| c.0.clone()).into(),
-        q.cursor.as_ref().map(|c| c.1.clone()).into(),
-        (q.limite + 1).into(),
-    ];
+    Ok(Json(json!({
+        "items": items,
+        "next_cursor": siguiente,
+        "sorted_by": q.orden.nombre(),
+        "match_unavailable": no_disponible,
+    }))
+    .into_response())
+}
+
+/// Los valores y los `AND o.col = $n` de los filtros, a partir de `$desde`.
+fn filtros_sql(q: &Consulta, valores: &mut Vec<sea_orm::Value>) -> String {
     let mut filtros = String::new();
     for (col, id) in &q.filtros {
         valores.push(id.clone().into());
         filtros.push_str(&format!(" AND o.{col} = ${}::uuid", valores.len()));
     }
+    filtros
+}
+
+/// `sort=recent|oldest`: la página sale de la base, y cada oferta lleva su `match`.
+async fn por_fecha(
+    s: &AppState,
+    user: &AuthUser,
+    q: &Consulta,
+    perfil: &matching::Profile,
+    hoy: matching::Ymd,
+) -> Result<(Vec<Value>, Option<String>), Fallo> {
+    let (cmp, dir) = match q.orden {
+        Orden::Antiguo => (">", "ASC"),
+        _ => ("<", "DESC"),
+    };
+    let mut valores: Vec<sea_orm::Value> = vec![
+        q.cursor.as_ref().map(|c| c.1.clone()).into(),
+        q.cursor.as_ref().map(|c| c.2.clone()).into(),
+        (q.limite + 1).into(),
+    ];
+    let filtros = filtros_sql(q, &mut valores);
     valores.push(user.id.clone().into());
     let mia = my_application_sql(valores.len());
     let sql = format!(
@@ -312,7 +410,7 @@ async fn list(
     let filas =
         s.db.query_all(stmt(&sql, valores))
             .await
-            .map_err(|e| Fallo::from(db("listar_ofertas")(e)))?;
+            .map_err(fallo_lectura)?;
     let hay_mas = filas.len() as i64 > q.limite;
     let mut items = Vec::new();
     let mut ultimo = None;
@@ -324,15 +422,107 @@ async fn list(
                 f.try_get_by_index(2)?,
             ))
         })()
-        .map_err(|e| Fallo::from(db("leer_ofertas")(e)))?;
+        .map_err(fallo_lectura)?;
         items.push(leido.0);
         ultimo = Some((leido.1, leido.2));
     }
+    let ids: Vec<String> = items
+        .iter()
+        .filter_map(|i| i["id"].as_str().map(str::to_string))
+        .collect();
+    let reqs = matching_store::requirements(&s.db, &ids)
+        .await
+        .map_err(fallo_lectura)?;
+    poner_match(&mut items, &matching_store::score_all(perfil, &reqs, hoy));
     let siguiente = match (hay_mas, ultimo) {
-        (true, Some((fecha, id))) => Some(codificar_cursor(q.orden, &fecha, &id)),
+        (true, Some((fecha, id))) => Some(codificar_cursor(q.orden, 0, &fecha, &id)),
         _ => None,
     };
-    Ok(Json(json!({"items": items, "next_cursor": siguiente})).into_response())
+    Ok((items, siguiente))
+}
+
+/// `sort=match`: el puntaje se calcula para **todas** las ofertas visibles (con los filtros) y
+/// se ordena en el servidor: puntaje, fecha e id, descendentes. El cursor guarda el último
+/// `(puntaje, fecha, id)` entregado, así que una oferta que cambia entre páginas no repite ni
+/// salta a las demás.
+async fn por_puntaje(
+    s: &AppState,
+    user: &AuthUser,
+    q: &Consulta,
+    perfil: &matching::Profile,
+    hoy: matching::Ymd,
+) -> Result<(Vec<Value>, Option<String>), Fallo> {
+    let mut valores: Vec<sea_orm::Value> = vec![];
+    let filtros = filtros_sql(q, &mut valores);
+    let sql = format!(
+        "SELECT o.id::text, o.publication_date::text {}{filtros}",
+        visible_sql()
+    );
+    let filas =
+        s.db.query_all(stmt(&sql, valores))
+            .await
+            .map_err(fallo_lectura)?;
+    let mut todas: Vec<(String, String)> = Vec::with_capacity(filas.len());
+    for f in &filas {
+        todas.push((
+            f.try_get_by_index(0).map_err(fallo_lectura)?,
+            f.try_get_by_index(1).map_err(fallo_lectura)?,
+        ));
+    }
+    let ids: Vec<String> = todas.iter().map(|t| t.0.clone()).collect();
+    let reqs = matching_store::requirements(&s.db, &ids)
+        .await
+        .map_err(fallo_lectura)?;
+    let mut puntajes = matching_store::score_all(perfil, &reqs, hoy);
+
+    // (puntaje, fecha, id) de mayor a menor.
+    let mut orden: Vec<(u8, String, String)> = todas
+        .into_iter()
+        .filter_map(|(id, fecha)| puntajes.get(&id).map(|p| (p.score, fecha, id)))
+        .collect();
+    orden.sort_unstable_by(|a, b| b.cmp(a));
+    if let Some((ps, pf, pi)) = &q.cursor {
+        let ancla = (ps.unwrap_or(0), pf.clone(), pi.clone());
+        orden.retain(|t| *t < ancla);
+    }
+    let hay_mas = orden.len() as i64 > q.limite;
+    orden.truncate(q.limite as usize);
+    let pagina: Vec<String> = orden.iter().map(|t| t.2.clone()).collect();
+    let siguiente = match (hay_mas, orden.last()) {
+        (true, Some((p, f, i))) => Some(codificar_cursor(Orden::Puntaje, *p, f, i)),
+        _ => None,
+    };
+    if pagina.is_empty() {
+        return Ok((vec![], None));
+    }
+
+    let sql = format!(
+        "SELECT jsonb_build_object({}, 'my_application', {})::text, o.id::text {} \
+         AND o.id = ANY (string_to_array($1, ',')::uuid[])",
+        resumen_sql(),
+        my_application_sql(2),
+        visible_sql(),
+    );
+    let filas =
+        s.db.query_all(stmt(
+            &sql,
+            vec![pagina.join(",").into(), user.id.clone().into()],
+        ))
+        .await
+        .map_err(fallo_lectura)?;
+    let mut por_id: HashMap<String, Value> = HashMap::new();
+    for f in &filas {
+        let valor = f
+            .try_get_by_index::<String>(0)
+            .and_then(json_de)
+            .map_err(fallo_lectura)?;
+        por_id.insert(f.try_get_by_index(1).map_err(fallo_lectura)?, valor);
+    }
+    // Una oferta que dejó de ser visible entre las dos consultas simplemente no sale.
+    let mut items: Vec<Value> = pagina.iter().filter_map(|id| por_id.remove(id)).collect();
+    puntajes.retain(|id, _| pagina.contains(id));
+    poner_match(&mut items, &puntajes);
+    Ok((items, siguiente))
 }
 
 /// `GET /offers/{id}`: lo no visible, inexistente o mal formado es el mismo 404.
@@ -352,7 +542,7 @@ async fn read(
         visible_sql(),
     );
     let fila =
-        s.db.query_one(stmt(&sql, vec![id.into(), user.id.clone().into()]))
+        s.db.query_one(stmt(&sql, vec![id.clone().into(), user.id.clone().into()]))
             .await
             .map_err(|e| Fallo::from(db("leer_oferta")(e)))?
             .ok_or(ApiError::NotFound)?;
@@ -360,5 +550,16 @@ async fn read(
         .try_get_by_index::<String>(0)
         .and_then(json_de)
         .map_err(|e| Fallo::from(db("leer_oferta")(e)))?;
+    let mut valor = valor;
+    let (perfil, hoy) = matching_store::viewer(&s.db, &user.id)
+        .await
+        .map_err(fallo_lectura)?;
+    let reqs = matching_store::requirements(&s.db, std::slice::from_ref(&id))
+        .await
+        .map_err(fallo_lectura)?;
+    poner_match(
+        std::slice::from_mut(&mut valor),
+        &matching_store::score_all(&perfil, &reqs, hoy),
+    );
     Ok(Json(valor).into_response())
 }
