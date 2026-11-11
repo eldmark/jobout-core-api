@@ -85,7 +85,7 @@ async fn los_favoritos_caen_con_la_persona_y_con_la_empresa() {
 async fn la_migracion_es_reversible() {
     let db = TestDb::migrated().await;
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(1)).await.unwrap();
+    Migrator::down(&db.conn, Some(2)).await.unwrap();
     assert_eq!(
         db.count(
             "SELECT count(*) FROM information_schema.tables \
