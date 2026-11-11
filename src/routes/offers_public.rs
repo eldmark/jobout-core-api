@@ -192,7 +192,7 @@ fn my_application_sql(n: usize) -> String {
     )
 }
 
-fn visible_sql() -> String {
+pub(crate) fn visible_sql() -> String {
     format!(
         "FROM job_offers o JOIN companies c ON c.id = o.company_id \
          WHERE o.status = 'published' AND o.publication_date IS NOT NULL \

@@ -28,8 +28,8 @@ use crate::{
     interview::{
         closing_message,
         store_crypto::{decrypt_turn_text, encrypt_turn_text},
-        InterviewEngine, Level, Message, RecruiterCode, RecruiterConfig, RubricCriterion, Speaker,
-        TurnKind,
+        InterviewEngine, Level, Message, OfferFocus, RecruiterCode, RecruiterConfig,
+        RubricCriterion, Speaker, TurnKind,
     },
     quota::{self, QuotaPolicy},
 };
@@ -106,6 +106,15 @@ pub struct LevelRef {
     pub name: String,
 }
 
+/// The offer a practice session is linked to: minimal, public data only. `company_name` is `null`
+/// when the offer is confidential (the company stays hidden).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct OfferRef {
+    pub id: String,
+    pub title: String,
+    pub company_name: Option<String>,
+}
+
 /// `Interview` of the contract.
 #[derive(Debug, Clone, Serialize)]
 pub struct Interview {
@@ -115,6 +124,9 @@ pub struct Interview {
     pub level: LevelRef,
     pub created_at: String,
     pub turns: Vec<Turn>,
+    /// Only when the session is a practice for an offer that still exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offer: Option<OfferRef>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +145,8 @@ pub struct Summary {
     pub score: Option<i32>,
     pub created_at: String,
     pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offer: Option<OfferRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -627,7 +641,7 @@ pub async fn answer_turn(
     let txn = db.begin().await?;
     let fila = match txn
         .query_one(stmt(
-            "SELECT s.status::text, r.code, l.code \
+            "SELECT s.status::text, r.code, l.code, s.job_offer_id::text \
              FROM interview_sessions s \
              JOIN ai_recruiters r ON r.id = s.ai_recruiter_id \
              JOIN interview_levels l ON l.id = s.interview_level_id \
@@ -652,6 +666,7 @@ pub async fn answer_turn(
     let status: String = fila.try_get_by_index(0).map_err(c)?;
     let recruiter_code: String = fila.try_get_by_index(1).map_err(c)?;
     let level_code: String = fila.try_get_by_index(2).map_err(c)?;
+    let offer_id: Option<String> = fila.try_get_by_index(3).map_err(c)?;
     if status != "in_progress" {
         let _ = txn.rollback().await;
         return Ok(AnswerOutcome::InvalidState);
@@ -695,7 +710,17 @@ pub async fn answer_turn(
     let config = RecruiterConfig { recruiter, level };
     let mut historial = to_messages(&turnos);
     historial.push(Message::candidate(text));
-    let Ok(siguiente) = engine.next_turn(&config, &historial) else {
+    // A practice session keeps asking about its offer for as long as the offer exists (even if
+    // it was closed meanwhile); if the offer was deleted the link is gone and the plain bank runs.
+    let foco = match offer_id.and_then(|o| Uuid::parse_str(&o).ok()) {
+        Some(o) => offer_focus(&txn, o).await?,
+        None => None,
+    };
+    let siguiente = match &foco {
+        Some(f) => engine.next_turn_for_offer(&config, f, &historial),
+        None => engine.next_turn(&config, &historial),
+    };
+    let Ok(siguiente) = siguiente else {
         let _ = txn.rollback().await;
         return Ok(AnswerOutcome::EngineFailed);
     };
@@ -930,6 +955,33 @@ pub async fn create_session(
     first_question: &str,
     policy: QuotaPolicy,
 ) -> Result<CreateOutcome, StoreError> {
+    create_session_for_offer(
+        db,
+        keys,
+        applicant,
+        recruiter,
+        level,
+        None,
+        first_question,
+        policy,
+    )
+    .await
+}
+
+/// [`create_session`] for a practice of an offer (`offer`: already checked as visible by the
+/// caller). The link is written with a sub-select, so an offer deleted in between leaves a plain
+/// session instead of a foreign-key error.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_session_for_offer(
+    db: &DatabaseConnection,
+    keys: &PiiKeys,
+    applicant: Uuid,
+    recruiter: Uuid,
+    level: Uuid,
+    offer: Option<Uuid>,
+    first_question: &str,
+    policy: QuotaPolicy,
+) -> Result<CreateOutcome, StoreError> {
     // The winner can finish (abandon, delete) between our violation and our look-up: retry.
     for _ in 0..3 {
         let txn = db.begin().await?;
@@ -954,14 +1006,17 @@ pub async fn create_session(
             .execute(stmt(
                 "INSERT INTO interview_sessions \
                     (id, applicant_id, ai_recruiter_id, interview_level_id, rubric_version_id, \
-                     status, started_at, last_activity_at) \
-                 VALUES ($1, $2, $3, $4, $5, 'in_progress', now(), now())",
+                     job_offer_id, status, started_at, last_activity_at) \
+                 VALUES ($1, $2, $3, $4, $5, \
+                         (SELECT o.id FROM job_offers o WHERE o.id = $6::uuid), \
+                         'in_progress', now(), now())",
                 vec![
                     id.into(),
                     applicant.into(),
                     recruiter.into(),
                     level.into(),
                     version.into(),
+                    offer.into(),
                 ],
             ))
             .await;
@@ -1001,6 +1056,94 @@ pub async fn create_session(
     Err(StoreError::Db)
 }
 
+// ------------------------------------------------------------------ practice of an offer
+
+/// The offer of a session as the person sees it: id, title and the company name unless the offer
+/// is confidential (then the company is not even read into the result). The LEFT JOINs give all
+/// `NULL` when the session has no offer (or the offer was deleted: `ON DELETE SET NULL`).
+const OFFER_COLUMNS: &str =
+    "o.id::text, o.name, CASE WHEN o.is_confidential THEN NULL ELSE oc.name END";
+const OFFER_JOIN: &str = "LEFT JOIN job_offers o ON o.id = s.job_offer_id \
+                          LEFT JOIN companies oc ON oc.id = o.company_id";
+
+fn offer_from(f: &sea_orm::QueryResult, first: usize) -> Result<Option<OfferRef>, StoreError> {
+    let c = |_| StoreError::Corrupt;
+    let id: Option<String> = f.try_get_by_index(first).map_err(c)?;
+    let Some(id) = id else { return Ok(None) };
+    Ok(Some(OfferRef {
+        id,
+        title: f.try_get_by_index(first + 1).map_err(c)?,
+        company_name: f.try_get_by_index(first + 2).map_err(c)?,
+    }))
+}
+
+/// The offer a person may practice: published and visible to candidates, by the very same rule as
+/// the candidate listing ([`crate::routes::offers_public::visible_sql`], which carries
+/// `company_gate::VISIBLE_COMPANY_SQL`). Anything else (draft, paused, closed, expired, a company
+/// that is not verified or has no membership, a made-up id) is `None`.
+pub async fn find_visible_offer<C: ConnectionTrait>(
+    db: &C,
+    offer: Uuid,
+) -> Result<Option<OfferRef>, StoreError> {
+    let sql = format!(
+        "SELECT o.id::text, o.name, CASE WHEN o.is_confidential THEN NULL ELSE c.name END {} \
+           AND o.id = $1",
+        crate::routes::offers_public::visible_sql()
+    );
+    let Some(f) = db.query_one(stmt(&sql, vec![offer.into()])).await? else {
+        return Ok(None);
+    };
+    let c = |_| StoreError::Corrupt;
+    Ok(Some(OfferRef {
+        id: f.try_get_by_index(0).map_err(c)?,
+        title: f.try_get_by_index(1).map_err(c)?,
+        company_name: f.try_get_by_index(2).map_err(c)?,
+    }))
+}
+
+/// What the engine gets from an offer: the title and the names of its required skills and of its
+/// languages, in a fixed order. Nothing of the company or of anyone (PR6). `None` if the offer is
+/// gone. No visibility check here: a session already started keeps its offer.
+pub async fn offer_focus<C: ConnectionTrait>(
+    db: &C,
+    offer: Uuid,
+) -> Result<Option<OfferFocus>, StoreError> {
+    let Some(f) = db
+        .query_one(stmt(
+            "SELECT o.name FROM job_offers o WHERE o.id = $1",
+            vec![offer.into()],
+        ))
+        .await?
+    else {
+        return Ok(None);
+    };
+    let c = |_| StoreError::Corrupt;
+    let names = |rows: Vec<sea_orm::QueryResult>| -> Result<Vec<String>, StoreError> {
+        rows.iter()
+            .map(|r| r.try_get_by_index::<String>(0).map_err(c))
+            .collect()
+    };
+    let skills = db
+        .query_all(stmt(
+            "SELECT s.name FROM job_offer_skills r JOIN skills s ON s.id = r.skill_id \
+             WHERE r.job_offer_id = $1 AND r.is_required ORDER BY s.code, s.id",
+            vec![offer.into()],
+        ))
+        .await?;
+    let languages = db
+        .query_all(stmt(
+            "SELECT l.name FROM job_offer_languages r JOIN languages l ON l.id = r.language_id \
+             WHERE r.job_offer_id = $1 ORDER BY l.code, l.id",
+            vec![offer.into()],
+        ))
+        .await?;
+    Ok(Some(OfferFocus {
+        title: f.try_get_by_index(0).map_err(c)?,
+        skills: names(skills)?,
+        languages: names(languages)?,
+    }))
+}
+
 /// One session of the person with all its turns decrypted, or `None` if it does not exist **or
 /// is somebody else's** (the two are the same answer on purpose).
 pub async fn get_session<C: ConnectionTrait>(
@@ -1011,10 +1154,11 @@ pub async fn get_session<C: ConnectionTrait>(
 ) -> Result<Option<Interview>, StoreError> {
     let sql = format!(
         "SELECT s.id::text, s.status::text, r.id::text, r.display_name, r.role_title, \
-                l.id::text, l.code, l.display_name, {} \
+                l.id::text, l.code, l.display_name, {}, {OFFER_COLUMNS} \
          FROM interview_sessions s \
          JOIN ai_recruiters r ON r.id = s.ai_recruiter_id \
          JOIN interview_levels l ON l.id = s.interview_level_id \
+         {OFFER_JOIN} \
          WHERE s.id = $1 AND s.applicant_id = $2 AND s.status <> 'created'",
         iso_sql("s.created_at")
     );
@@ -1041,6 +1185,7 @@ pub async fn get_session<C: ConnectionTrait>(
         },
         created_at: f.try_get_by_index(8).map_err(c)?,
         turns,
+        offer: offer_from(&f, 9)?,
     }))
 }
 
@@ -1086,11 +1231,12 @@ pub async fn list_sessions<C: ConnectionTrait>(
     let sql = format!(
         "SELECT s.id::text, s.status::text, l.id::text, l.code, l.display_name, \
                 r.id::text, r.display_name, sc.score::int4, {}, {}, \
-                (extract(epoch from s.created_at) * 1000000)::bigint, s.id \
+                (extract(epoch from s.created_at) * 1000000)::bigint, s.id, {OFFER_COLUMNS} \
          FROM interview_sessions s \
          JOIN ai_recruiters r ON r.id = s.ai_recruiter_id \
          JOIN interview_levels l ON l.id = s.interview_level_id \
          LEFT JOIN interview_scores sc ON sc.interview_session_id = s.id \
+         {OFFER_JOIN} \
          WHERE s.applicant_id = $1 AND s.status <> 'created' \
            AND ($2::text IS NULL OR s.status::text = $2) \
            AND ($3::bigint IS NULL OR (s.created_at, s.id) < \
@@ -1135,6 +1281,7 @@ pub async fn list_sessions<C: ConnectionTrait>(
             score: f.try_get_by_index(7).map_err(c)?,
             created_at: f.try_get_by_index(8).map_err(c)?,
             completed_at: f.try_get_by_index(9).map_err(c)?,
+            offer: offer_from(f, 12)?,
         });
         ultimo = Some(Cursor {
             created_micros: f.try_get_by_index(10).map_err(c)?,

@@ -220,3 +220,31 @@ static SOFIA_STARTUP: [Question; 6] = [
         "What do you hope to have achieved after your first year here?",
     ),
 ];
+
+/// The sentence appended to the recruiter's opening in a practice session for an offer.
+pub fn offer_intro(code: RecruiterCode, title: &str) -> String {
+    match code {
+        RecruiterCode::Sofia => {
+            format!("Today we are practicing the interview for the role «{title}».")
+        }
+        _ => format!("Hoy practicaremos la entrevista para el puesto «{title}»."),
+    }
+}
+
+/// One question per required skill of the offer (decision 12, minimal option).
+pub fn skill_question(english: bool, skill: &str) -> String {
+    if english {
+        format!("Tell me about a time you used {skill} in a real project or job. What did you do with it?")
+    } else {
+        format!("Cuéntame de una vez que usaste {skill} en un proyecto o trabajo real. ¿Qué hiciste con eso?")
+    }
+}
+
+/// One question per language the offer asks for.
+pub fn language_question(english: bool, language: &str) -> String {
+    if english {
+        format!("This role asks for {language}. Tell me about a situation where you used it at work or in your studies.")
+    } else {
+        format!("Este puesto pide {language}. Cuéntame de una situación en la que lo usaste en el trabajo o en tus estudios.")
+    }
+}

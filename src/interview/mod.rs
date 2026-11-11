@@ -8,12 +8,14 @@
 mod bank;
 mod deterministic;
 mod evaluation;
+mod focus;
 mod scripted;
 pub mod store_crypto;
 mod text;
 
 pub use bank::closing as closing_message;
 pub use deterministic::DeterministicEngine;
+pub use focus::OfferFocus;
 pub use scripted::ScriptedEngine;
 
 /// The engine as the application holds it: shared between requests, so it must be thread-safe.
@@ -225,6 +227,18 @@ pub trait InterviewEngine {
         config: &RecruiterConfig,
         history: &[Message],
     ) -> Result<NextTurn, EngineError>;
+
+    /// Like [`InterviewEngine::next_turn`], for a practice session tailored to a published offer.
+    /// Engines that do not know about offers ignore it (the default), so the plain interview is
+    /// all they ever give.
+    fn next_turn_for_offer(
+        &self,
+        config: &RecruiterConfig,
+        _focus: &OfferFocus,
+        history: &[Message],
+    ) -> Result<NextTurn, EngineError> {
+        self.next_turn(config, history)
+    }
 
     /// Score a transcript against rubric criteria.
     fn evaluate(
