@@ -168,7 +168,7 @@ async fn la_migracion_es_reversible() {
     .await
     .unwrap();
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(1)).await.unwrap();
+    Migrator::down(&db.conn, Some(2)).await.unwrap();
     assert_eq!(nullable(&db, "job_applications", "status").await, None);
     assert_eq!(nullable(&db, "external_applications", "notes").await, None);
     assert_eq!(
