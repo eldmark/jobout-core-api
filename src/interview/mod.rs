@@ -8,12 +8,16 @@
 mod bank;
 mod deterministic;
 mod evaluation;
+mod focus;
+pub mod openrouter;
 mod scripted;
 pub mod store_crypto;
 mod text;
 
 pub use bank::closing as closing_message;
 pub use deterministic::DeterministicEngine;
+pub use focus::OfferFocus;
+pub use openrouter::{OpenRouterConfig, OpenRouterEngine};
 pub use scripted::ScriptedEngine;
 
 /// The engine as the application holds it: shared between requests, so it must be thread-safe.
@@ -218,6 +222,12 @@ impl std::fmt::Display for EngineError {
 impl std::error::Error for EngineError {}
 
 pub trait InterviewEngine {
+    /// Whether a language model words what the recruiter says, i.e. the candidate's answers leave
+    /// the service. Only the OpenRouter engine says yes; the web uses it to show a privacy notice.
+    fn ai_replies(&self) -> bool {
+        false
+    }
+
     /// The next thing the recruiter says, given the conversation so far (empty history gives the
     /// opening question). Pure: the same history always gives the same turn.
     fn next_turn(
@@ -225,6 +235,18 @@ pub trait InterviewEngine {
         config: &RecruiterConfig,
         history: &[Message],
     ) -> Result<NextTurn, EngineError>;
+
+    /// Like [`InterviewEngine::next_turn`], for a practice session tailored to a published offer.
+    /// Engines that do not know about offers ignore it (the default), so the plain interview is
+    /// all they ever give.
+    fn next_turn_for_offer(
+        &self,
+        config: &RecruiterConfig,
+        _focus: &OfferFocus,
+        history: &[Message],
+    ) -> Result<NextTurn, EngineError> {
+        self.next_turn(config, history)
+    }
 
     /// Score a transcript against rubric criteria.
     fn evaluate(

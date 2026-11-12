@@ -352,7 +352,8 @@ async fn p6_put_es_completo_e_idempotente() {
     db.cleanup().await;
 }
 
-/// P7: `/me` devuelve exactamente los mismos campos que en la Fase 1: el perfil no se cuela.
+/// P7: `/me` devuelve los campos de la Fase 1 más `roles` y `permissions` (Fase 5, paso 2): el
+/// perfil no se cuela.
 #[tokio::test]
 async fn p7_me_no_cambia() {
     let (db, app, token) = con_cuenta().await;
@@ -363,7 +364,16 @@ async fn p7_me_no_cambia() {
     campos.sort();
     assert_eq!(
         campos,
-        ["email", "first_name", "id", "last_name", "plan", "status"]
+        [
+            "email",
+            "first_name",
+            "id",
+            "last_name",
+            "permissions",
+            "plan",
+            "roles",
+            "status"
+        ]
     );
     db.cleanup().await;
 }

@@ -32,7 +32,7 @@ async fn u1_la_tabla_es_reversible() {
     let db = TestDb::migrated().await;
     assert!(existe(&db).await);
     let antes = esquema(&db).await;
-    Migrator::down(&db.conn, Some(1)).await.expect("down");
+    Migrator::down(&db.conn, Some(8)).await.expect("down");
     assert!(!existe(&db).await, "down debe quitar usage_ledger");
     assert!(
         db.count("SELECT count(*) FROM information_schema.tables WHERE table_name = 'interview_sessions'")

@@ -7,3 +7,11 @@ docker-compose.yml
 docker-compose.override.yml
 **/*.md
 .github/
+# Almacén local de archivos (BLOB_DIR): lo crea el contenedor como root con 0700,
+# el daemon no puede leerlo y rompería el build. Nunca hace falta en la imagen.
+data/
+*.log
+*.pem
+*.key
+*.p8
+*.p12

@@ -11,6 +11,14 @@ mod m20261105_000003_create_cvs;
 mod m20261108_000001_create_interview_catalog;
 mod m20261108_000002_create_interviews;
 mod m20261108_000003_create_usage_ledger;
+mod m20261108_000004_seed_recruiter_roles;
+mod m20261110_000001_create_offer_catalogs;
+mod m20261110_000002_create_companies;
+mod m20261110_000003_create_job_offers;
+mod m20261110_000004_create_applications;
+mod m20261111_000001_create_company_favorites;
+mod m20261111_000002_anonymize_company_authorship;
+pub mod offer_seeds;
 pub mod seeds;
 
 pub struct Migrator;
@@ -34,6 +42,13 @@ impl MigratorTrait for Migrator {
             Box::new(m20261108_000001_create_interview_catalog::Migration),
             Box::new(m20261108_000002_create_interviews::Migration),
             Box::new(m20261108_000003_create_usage_ledger::Migration),
+            Box::new(m20261108_000004_seed_recruiter_roles::Migration),
+            Box::new(m20261110_000001_create_offer_catalogs::Migration),
+            Box::new(m20261110_000002_create_companies::Migration),
+            Box::new(m20261110_000003_create_job_offers::Migration),
+            Box::new(m20261110_000004_create_applications::Migration),
+            Box::new(m20261111_000001_create_company_favorites::Migration),
+            Box::new(m20261111_000002_anonymize_company_authorship::Migration),
         ]
     }
 }

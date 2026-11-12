@@ -1,11 +1,16 @@
-//! `GET /api/v1/catalogs/{nombre}`: los catálogos cerrados que el perfil necesita para elegir
-//! (skills, idiomas, niveles académicos, profesiones y jerarquías laborales).
+//! `GET /api/v1/catalogs/{nombre}`: los catálogos cerrados que el perfil y el formulario de una
+//! oferta necesitan para elegir (skills, idiomas, niveles académicos, profesiones, jerarquías
+//! laborales, países, estados, ciudades, rangos salariales, jornadas, tipos de contrato,
+//! sectores y licencias).
+//!
+//! `states` y `cities` aceptan un padre opcional (`?country_id=` y `?state_id=`, un uuid): sin
+//! él salen todos. El padre llega al SQL solo como parámetro enlazado y ya validado como uuid.
 //!
 //! Devuelve solo los activos, ordenados por `sort_order` y luego `name`. El nombre de la URL
 //! nunca llega al SQL: se traduce, por una lista cerrada, a un nombre de tabla fijo.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -14,6 +19,7 @@ use axum::{
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::Serialize;
 use serde_json::json;
+use std::collections::HashMap;
 
 use super::table::{Access, RouteSpec};
 use crate::{auth_user::AuthUser, state::AppState};
@@ -48,12 +54,55 @@ fn consulta(nombre: &str) -> Option<&'static str> {
             "SELECT id::text, code, name FROM job_hierarchies WHERE active \
              ORDER BY sort_order, name"
         }
+        "countries" => {
+            "SELECT id::text, code, name FROM countries WHERE active ORDER BY sort_order, name"
+        }
+        "salary-ranges" => {
+            "SELECT id::text, code, name FROM salary_ranges WHERE active ORDER BY sort_order, name"
+        }
+        "working-shifts" => {
+            "SELECT id::text, code, name FROM working_shifts WHERE active \
+             ORDER BY sort_order, name"
+        }
+        "contract-types" => {
+            "SELECT id::text, code, name FROM contract_types WHERE active \
+             ORDER BY sort_order, name"
+        }
+        "employment-sectors" => {
+            "SELECT id::text, code, name FROM employment_sectors WHERE active \
+             ORDER BY sort_order, name"
+        }
+        "driver-licenses" => {
+            "SELECT id::text, code, name FROM driver_licenses WHERE active \
+             ORDER BY sort_order, name"
+        }
+        _ => return None,
+    })
+}
+
+/// Los catálogos con padre: (consulta sin filtro, consulta con filtro, parámetro). La segunda
+/// recibe el uuid del padre como `$1`.
+fn consulta_con_padre(nombre: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    Some(match nombre {
+        "states" => (
+            "SELECT id::text, code, name FROM states WHERE active ORDER BY sort_order, name",
+            "SELECT id::text, code, name FROM states WHERE active AND country_id = $1::uuid \
+             ORDER BY sort_order, name",
+            "country_id",
+        ),
+        "cities" => (
+            "SELECT id::text, code, name FROM cities WHERE active ORDER BY sort_order, name",
+            "SELECT id::text, code, name FROM cities WHERE active AND state_id = $1::uuid \
+             ORDER BY sort_order, name",
+            "state_id",
+        ),
         _ => return None,
     })
 }
 
 enum ApiError {
     NotFound,
+    BadParent,
     Internal,
 }
 
@@ -64,6 +113,11 @@ impl IntoResponse for ApiError {
                 StatusCode::NOT_FOUND,
                 "no_encontrado",
                 "No existe ese catálogo.",
+            ),
+            Self::BadParent => (
+                StatusCode::BAD_REQUEST,
+                "parametro_invalido",
+                "El filtro por padre debe ser un identificador válido.",
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -86,16 +140,29 @@ async fn list(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(nombre): Path<String>,
+    Query(filtros): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<Item>>, ApiError> {
-    let sql = consulta(&nombre).ok_or(ApiError::NotFound)?;
-    let filas = state
-        .db
-        .query_all(Statement::from_string(DbBackend::Postgres, sql))
-        .await
-        .map_err(|_| {
-            tracing::error!(donde = "leer_catalogo", "error interno");
-            ApiError::Internal
-        })?;
+    let sentencia = if let Some((todos, filtrada, parametro)) = consulta_con_padre(&nombre) {
+        match filtros.get(parametro) {
+            None => Statement::from_string(DbBackend::Postgres, todos),
+            Some(padre) => {
+                // Solo un uuid válido llega a la base.
+                let padre = uuid::Uuid::parse_str(padre).map_err(|_| ApiError::BadParent)?;
+                Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    filtrada,
+                    [padre.to_string().into()],
+                )
+            }
+        }
+    } else {
+        let sql = consulta(&nombre).ok_or(ApiError::NotFound)?;
+        Statement::from_string(DbBackend::Postgres, sql)
+    };
+    let filas = state.db.query_all(sentencia).await.map_err(|_| {
+        tracing::error!(donde = "leer_catalogo", "error interno");
+        ApiError::Internal
+    })?;
     filas
         .iter()
         .map(|f| {

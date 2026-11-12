@@ -3,14 +3,19 @@
 //! Este servicio es el único que habla con PostgreSQL y el único que ve PII.
 //! Ver `documentation/arquitectura.md` y `documentation/security.md` en jobout-docs.
 
+pub mod applications;
 pub mod auth_user;
 pub mod blob;
+pub mod company_gate;
+pub mod company_scope;
 pub mod crypto;
 pub mod cv;
 pub mod interview;
 pub mod interview_store;
 pub mod jwt;
 pub mod login_attempts;
+pub mod matching;
+pub mod offers;
 pub mod password;
 pub mod quota;
 pub mod routes;

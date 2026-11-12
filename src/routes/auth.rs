@@ -179,11 +179,11 @@ struct TokenResponse {
 }
 
 /// Quita espacios y pasa a minúsculas. Es la misma normalización que usa `email_hash`.
-fn normalize_email(email: &str) -> String {
+pub(crate) fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
-fn email_is_valid(email: &str) -> bool {
+pub(crate) fn email_is_valid(email: &str) -> bool {
     if email.is_empty() || email.len() > MAX_EMAIL_LEN || email.chars().any(char::is_whitespace) {
         return false;
     }

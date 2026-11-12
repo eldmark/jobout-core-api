@@ -131,6 +131,28 @@ impl PiiKeys {
         String::from_utf8(claro).map_err(|_| CryptoError::DecryptionFailed)
     }
 
+    /// HMAC-SHA256 con la clave de hash y un prefijo de dominio, para que el hash de un NIT o de
+    /// una IP nunca coincida con el de un correo ni entre sí.
+    fn domain_hash(&self, dominio: &str, dato: &str) -> Vec<u8> {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.hash)
+            .expect("HMAC acepta claves de cualquier largo");
+        mac.update(dominio.as_bytes());
+        mac.update(&[0]);
+        mac.update(dato.as_bytes());
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    /// HMAC del NIT **ya normalizado** (mayúsculas, sin guiones ni espacios). Determinístico:
+    /// es la unicidad de `companies.tax_id_hash`.
+    pub fn tax_id_hash(&self, nit_normalizado: &str) -> Vec<u8> {
+        self.domain_hash("tax_id", nit_normalizado)
+    }
+
+    /// HMAC de una IP para `access_audit.ip_hash`: se puede comparar, no se puede leer.
+    pub fn ip_hash(&self, ip: &str) -> Vec<u8> {
+        self.domain_hash("ip", ip.trim())
+    }
+
     /// HMAC-SHA256 del email normalizado (sin espacios en los extremos y en minúsculas).
     /// Determinístico: sirve para buscar y para la restricción de unicidad.
     pub fn email_hash(&self, email: &str) -> Vec<u8> {

@@ -237,8 +237,18 @@ async fn applicant_de(state: &AppState, user: &AuthUser) -> Result<Uuid, ApiErro
 
 // ------------------------------------------------------------------ POST /interviews
 
-/// El cuerpo de `POST /interviews`: dos UUID. Cualquier otra cosa es 422, sin repetir nada.
-fn leer_cuerpo(cuerpo: &[u8]) -> Result<(Uuid, Uuid), ApiError> {
+/// La oferta del cuerpo (HU-31): ausente o `null` = sin oferta; una cadena que no es un UUID **no es
+/// 422**, es una oferta que no existe (PR4: mismo 404 que cualquier oferta no visible); cualquier
+/// otro tipo es 422.
+enum OfertaPedida {
+    Ninguna,
+    Id(Uuid),
+    Inexistente,
+}
+
+/// El cuerpo de `POST /interviews`: dos UUID y, opcional, `job_offer_id`. Cualquier otra cosa es
+/// 422, sin repetir nada.
+fn leer_cuerpo(cuerpo: &[u8]) -> Result<(Uuid, Uuid, OfertaPedida), ApiError> {
     let json: Value = serde_json::from_slice(cuerpo).map_err(|_| ApiError::Invalid)?;
     let id = |campo: &str| {
         json.get(campo)
@@ -246,7 +256,15 @@ fn leer_cuerpo(cuerpo: &[u8]) -> Result<(Uuid, Uuid), ApiError> {
             .and_then(|t| Uuid::parse_str(t).ok())
             .ok_or(ApiError::Invalid)
     };
-    Ok((id("recruiter_id")?, id("level_id")?))
+    let oferta = match json.get("job_offer_id") {
+        None | Some(Value::Null) => OfertaPedida::Ninguna,
+        Some(Value::String(t)) => match Uuid::parse_str(t) {
+            Ok(u) => OfertaPedida::Id(u),
+            Err(_) => OfertaPedida::Inexistente,
+        },
+        Some(_) => return Err(ApiError::Invalid),
+    };
+    Ok((id("recruiter_id")?, id("level_id")?, oferta))
 }
 
 async fn create(
@@ -254,9 +272,9 @@ async fn create(
     user: AuthUser,
     cuerpo: Bytes,
 ) -> Result<Response, ApiError> {
-    // Orden del contrato: cuerpo -> existen -> disponible -> desbloqueado -> sin sesión activa -> cuota
-    // (esta última, dentro de `create_session`).
-    let (recruiter_id, level_id) = leer_cuerpo(&cuerpo)?;
+    // Orden del contrato: cuerpo -> existen (recruiter, nivel y oferta visible, todos 404) ->
+    // disponible -> desbloqueado -> sin sesión activa -> cuota (esta última, dentro de la creación).
+    let (recruiter_id, level_id, pedida) = leer_cuerpo(&cuerpo)?;
     let applicant = applicant_de(&state, &user).await?;
 
     let recruiter = store::find_recruiter(&state.db, recruiter_id)
@@ -267,6 +285,18 @@ async fn create(
         .await
         .map_err(interno("leer_nivel"))?
         .ok_or(ApiError::NotFound)?;
+    // Solo una oferta visible para candidatos; el resto, igual que una inexistente.
+    let oferta = match pedida {
+        OfertaPedida::Ninguna => None,
+        OfertaPedida::Inexistente => return Err(ApiError::NotFound),
+        OfertaPedida::Id(id) => {
+            store::find_visible_offer(&state.db, id)
+                .await
+                .map_err(interno("leer_oferta"))?
+                .ok_or(ApiError::NotFound)?;
+            Some(id)
+        }
+    };
     if !level.available {
         return Err(ApiError::Unavailable);
     }
@@ -285,17 +315,35 @@ async fn create(
         recruiter: RecruiterCode::from_code(&recruiter.code).ok_or(ApiError::Engine)?,
         level: Level::from_code(&level.code).ok_or(ApiError::Engine)?,
     };
-    let primera = DeterministicEngine
-        .next_turn(&config, &[])
-        .map_err(|_| ApiError::Engine)?;
+    let foco = match oferta {
+        Some(id) => store::offer_focus(&state.db, id)
+            .await
+            .map_err(interno("leer_foco_oferta"))?,
+        None => None,
+    };
+    // The configured engine words it (JB-88: the AI wording, when enabled). The opening has always
+    // been the deterministic one and cannot fail, so an engine that errors here changes nothing.
+    let primera = match &foco {
+        Some(f) => state.engine.next_turn_for_offer(&config, f, &[]),
+        None => state.engine.next_turn(&config, &[]),
+    };
+    let primera = match primera {
+        Ok(t) => t,
+        Err(_) => match &foco {
+            Some(f) => DeterministicEngine.next_turn_for_offer(&config, f, &[]),
+            None => DeterministicEngine.next_turn(&config, &[]),
+        }
+        .map_err(|_| ApiError::Engine)?,
+    };
 
     // Dos creaciones simultáneas pasan la comprobación de arriba: el índice único parcial decide.
-    let session_id = match store::create_session(
+    let session_id = match store::create_session_for_offer(
         &state.db,
         &state.pii,
         applicant,
         recruiter.id,
         level.id,
+        oferta,
         &primera.message,
         QuotaPolicy::current(),
     )

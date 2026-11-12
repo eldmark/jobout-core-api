@@ -29,6 +29,10 @@ const CLAVE: &str = "una-clave-larga-123";
 const RUTAS: [&str; 3] = ["/api/v1/recruiters", "/api/v1/levels", "/api/v1/progress"];
 
 fn app(db: &TestDb) -> Router {
+    app_con_motor(db, jobout_core_api::interview::default_engine())
+}
+
+fn app_con_motor(db: &TestDb, engine: jobout_core_api::interview::SharedEngine) -> Router {
     let pii = Arc::new(
         PiiKeys::from_base64(&STANDARD.encode([1u8; 32]), &STANDARD.encode([2u8; 32])).unwrap(),
     );
@@ -37,7 +41,7 @@ fn app(db: &TestDb) -> Router {
         pii,
         jwt: Arc::new(JwtKeys::from_secret(&"s".repeat(40)).unwrap()),
         blobs: jobout_core_api::blob::memory_store(),
-        engine: jobout_core_api::interview::default_engine(),
+        engine,
     })
 }
 
@@ -242,6 +246,67 @@ async fn r2_recruiters_con_campos_publicos() {
     assert!(!texto.contains("PROMPT-INTERNO-SECRETO-77"), "{texto}");
     for prohibido in ["system_prompt", "criteria", "rubric", "voice_id"] {
         assert!(!texto.contains(prohibido), "filtra {prohibido}: {texto}");
+    }
+    db.cleanup().await;
+}
+
+/// JB-92: `GET /recruiters` dice si la IA redacta de verdad. Sin interruptor, o con interruptor sin
+/// clave, es `false`; solo con `AI_REPLIES_ENABLED` y una clave es `true`. Los items no cambian y la
+/// clave nunca sale.
+#[tokio::test]
+async fn r2c_recruiters_informa_si_la_ia_esta_activa() {
+    let db = TestDb::migrated().await;
+    let caso = |vars: &'static [(&'static str, &'static str)]| {
+        jobout_core_api::interview::openrouter::engine_from_lookup(move |n| {
+            vars.iter()
+                .find(|(k, _)| *k == n)
+                .map(|(_, v)| v.to_string())
+        })
+    };
+    let casos: [(&str, jobout_core_api::interview::SharedEngine, bool); 5] = [
+        (
+            "motor por defecto",
+            jobout_core_api::interview::default_engine(),
+            false,
+        ),
+        ("nada configurado", caso(&[]), false),
+        (
+            "interruptor apagado con clave",
+            caso(&[
+                ("AI_REPLIES_ENABLED", "false"),
+                ("OPENROUTER_API_KEY", "sk-or-secreta-9"),
+            ]),
+            false,
+        ),
+        (
+            "interruptor sin clave",
+            caso(&[("AI_REPLIES_ENABLED", "true")]),
+            false,
+        ),
+        (
+            "interruptor y clave",
+            caso(&[
+                ("AI_REPLIES_ENABLED", "true"),
+                ("OPENROUTER_API_KEY", "sk-or-secreta-9"),
+            ]),
+            true,
+        ),
+    ];
+    for (nombre, motor, esperado) in casos {
+        let app = app_con_motor(&db, motor);
+        let email = format!("{}@correo-prueba.com", nombre.replace(' ', "-"));
+        let token = registrar(&app, &email).await;
+        let (estado, cuerpo, texto) = get(&app, &token, "/api/v1/recruiters").await;
+        assert_eq!(estado, StatusCode::OK, "{nombre}: {texto}");
+        assert_eq!(cuerpo["ai_replies"], json!(esperado), "{nombre}: {texto}");
+        assert_eq!(cuerpo["items"].as_array().unwrap().len(), 5, "{nombre}");
+        assert!(
+            !texto.contains("sk-or-secreta-9"),
+            "{nombre}: filtra la clave"
+        );
+        // Solo `recruiters` lleva la marca; levels y progress quedan como estaban.
+        let (_, niveles, _) = get(&app, &token, "/api/v1/levels").await;
+        assert!(niveles.get("ai_replies").is_none(), "{nombre}: {niveles}");
     }
     db.cleanup().await;
 }

@@ -188,3 +188,20 @@ fn debug_no_imprime_las_claves() {
     assert!(!salida.contains(&clave(2)));
     assert!(salida.contains("PiiKeys"));
 }
+
+/// Los hashes de NIT y de IP son determinísticos, de 32 bytes y de dominios separados: el HMAC
+/// de un NIT nunca coincide con el de un correo, una IP o un NIT distinto.
+#[test]
+fn los_hashes_de_nit_e_ip_son_deterministicos_y_de_dominios_separados() {
+    let k = llaves();
+    assert_eq!(k.tax_id_hash("12345678"), k.tax_id_hash("12345678"));
+    assert_ne!(k.tax_id_hash("12345678"), k.tax_id_hash("12345679"));
+    assert_eq!(k.tax_id_hash("12345678").len(), 32);
+    assert_eq!(k.ip_hash(" 203.0.113.7 "), k.ip_hash("203.0.113.7"));
+    assert_ne!(k.tax_id_hash("abc"), k.email_hash("abc"));
+    assert_ne!(k.tax_id_hash("abc"), k.ip_hash("abc"));
+    assert_ne!(k.ip_hash("abc"), k.email_hash("abc"));
+    // Otra clave de hash, otro resultado.
+    let otra = PiiKeys::from_base64(&clave(1), &clave(3)).unwrap();
+    assert_ne!(k.tax_id_hash("12345678"), otra.tax_id_hash("12345678"));
+}
